@@ -1,0 +1,1668 @@
+---
+title: "Práctica 1 - Minería de Datos"
+author: "Diego Gijón Fernández, Ingeniería Bionformática - UMA"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+lang: es
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    self_contained: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    df_print: paged
+    number_sections: true
+    fig_caption: true
+    includes:
+      in_header: estilos_personalizados.html
+  
+
+---
+
+<!-- Logo fuera del chunk R -->
+<img src="logo_universidad.png" alt="Logo Universidad" style="height: 120px;">
+  
+PRIMERAMENTE MENCIONAR QUE HE USADO CHAGTP PARA LA MEJORA DE ESCRITURA Y CÓDIGO DE ESTE TRABAJO
+
+# Introducción
+El objetivo principal de este trabajo es identificar el mejor modelo multivariante capaz de predecir de forma eficaz la respuesta patológica completa (RCP) en pacientes con cáncer de mama, a partir de distintas variables clínicas. Aunque algunas variables puedan mostrar asociación individual con la RCP, no necesariamente implican una contribución significativa cuando se consideran conjuntamente en un modelo. Por ello, se utilizará un enfoque de regresión paso a paso (stepwise regression), que permite seleccionar de forma automática el conjunto óptimo de variables, optimizando criterios como el AIC para alcanzar un modelo que explique mejor los datos, evitando el uso de fuerza bruta.
+
+En el contexto clínico actual, el tratamiento del cáncer de mama ha evolucionado hacia una estrategia cada vez más personalizada, teniendo en cuenta las características tanto del tumor como del paciente. Entre los factores emergentes con posible influencia en la respuesta terapéutica destaca la microbiota intestinal, cuya alteración —por ejemplo, mediante el uso de antibióticos— puede afectar la función del sistema inmune y, en consecuencia, la eficacia de los tratamientos oncológicos.
+
+El tratamiento neoadyuvante, consistente en administrar quimioterapia antes de la cirugía, permite evaluar directamente la respuesta del tumor. El objetivo clínico más favorable es alcanzar una respuesta patológica completa, que se asocia con mejores tasas de supervivencia a largo plazo. No obstante, el uso de antibióticos durante este proceso podría modificar la microbiota intestinal, generando un estado de disbiosis que compromete la inmunomodulación y potencialmente reduce la efectividad terapéutica.
+
+Aunque este fenómeno ya ha sido descrito en cánceres como el de pulmón, riñón o melanoma, su impacto específico en cáncer de mama sigue sin estar bien definido. Por ello, el presente estudio se plantea como una oportunidad para analizar en profundidad si el uso de antibióticos durante o antes del tratamiento neoadyuvante influye negativamente en los resultados clínicos en pacientes con cáncer de mama.
+
+# Hipótesis y Objetivos
+La hipótesis central plantea que el uso de antibióticos en pacientes con cáncer de mama, durante o en las semanas previas al inicio del tratamiento neoadyuvante, podría comprometer la efectividad del mismo. Esto se debe a la posible alteración de la microbiota intestinal, que juega un papel clave en la modulación inmune, el microambiente tumoral y la metabolización de fármacos.
+
+El objetivo del estudio es evaluar si las pacientes que reciben antibióticos presentan:
+
+-Menores tasas de respuesta completa patológica (medida a través de la escala RCB).
+
+-Peores resultados de supervivencia global.
+
+-Mayor probabilidad de recaída posterior al tratamiento.
+
+Para ello, se aplicarán técnicas estadísticas descriptivas, pruebas de asociación y modelos multivariantes que permitan identificar los factores más influyentes.
+
+# Fuentes de Datos (Población de Estudio)
+Los datos utilizados en este estudio provienen de la Unidad de Gestión Clínica de Oncología Médica del Hospital Regional de Málaga, los cuales están almacenados en el sistema de información clínica Galén. Esta base de datos oncológica contiene una gran cantidad de información estructurada y no estructurada relacionada con los pacientes oncológicos atendidos en la unidad, incluyendo aspectos clínicos, tratamientos recibidos, resultados quirúrgicos, participación en ensayos clínicos, datos genéticos y seguimiento.
+
+La población de estudio está compuesta por pacientes diagnosticadas de cáncer de mama entre los años 2009 y 2023, que fueron tratadas con quimioterapia neoadyuvante y posteriormente sometidas a cirugía.
+
+```{r setup}
+# Vamos a centrar todas las figuras y a dejarlas a un tamaño más cómodo
+knitr::opts_chunk$set(fig.align='center', fig.width=6, fig.height=4, out.width='70%')
+```
+
+
+Antes de comenzar con el análisis, procedemos a la importación del conjunto de datos clínicos desde un archivo Excel, que contiene información relevante sobre pacientes con cáncer de mama tratadas con quimioterapia neoadyuvante.
+```{r  vista_tabla, warning=FALSE, message=FALSE, results='asis'}
+# Cargar librerías necesarias
+library(readxl)
+library(dplyr)
+library(kableExtra)
+library(caret)
+library(nnet)
+library(pROC)
+
+# Definir la ruta del archivo (ajustar si es necesario)
+ruta <- "C:/Users/diego/Downloads/muestra_700_UGC.xlsx"
+
+# Lectura del archivo Excel
+datos <- read_excel(ruta)
+
+
+
+datos %>%
+  head(10) %>%
+  kable("html", caption = "Vista preliminar de las primeras observaciones del conjunto de datos clínicos") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = TRUE,
+                position = "center") %>%
+  scroll_box(width = "100%", height = "400px")
+
+```
+
+
+Antes de nada, estudiamos las variables:
+```{r warning=FALSE, message=FALSE}
+
+str(datos) # Da la descripción de la estructura de datos
+
+
+```
+
+Podemos observar que este dataset contiene 28 variables relacionadas con el diagnostico , tratamient y evolución de los pacientes. Las variables clave incluyen datos demográficos como el sexo, la edad al diagnóstico y el estado menopáusico, así como información sobre el tratamiento recibido, incluyendo el tipo de cirugía, la quimioterapia neoadyuvante y la terapia hormonal. También se consideran características del tumor, como el tipo histológico, la localización, el tamaño y la respuesta patológica (RCB). Además, se analizan los resultados clínicos, como la presencia de recaídas y el estado del paciente en el último control, junto con factores relevantes como retrasos en el tratamiento y el uso de antibióticos, incluyendo la cantidad administrada. La última variable tiene en el nombre un salto de línea. Corregiremos esto más adelante.
+
+## Preprocesamiento
+
+A continuación, se lleva a cabo un análisis estadístico descriptivo sobre las variables numéricas presentes en el conjunto de datos. Este análisis incluye:
+
+- Medidas de tendencia central: media y mediana, que indican la localización del centro de los datos.
+
+- Medidas de dispersión: rango, rango intercuartílico (RIC), desviación típica y varianza, que ofrecen una idea del grado de variabilidad entre los valores observados.
+
+
+
+
+```{r estadisticas}
+# Librerías para análisis y visualización
+library(tidyr)
+library(ggplot2)
+library(purrr)
+
+# Filtramos solo las variables numéricas
+datos_numericos <- datos %>% select(where(is.numeric))
+
+# Calculamos estadísticas resumen para cada variable numérica
+estadisticas <- map_dfr(
+  datos_numericos,
+  ~ tibble(
+    Mínimo = min(., na.rm = TRUE),
+    Máximo = max(., na.rm = TRUE),
+    Media = mean(., na.rm = TRUE),
+    Mediana = median(., na.rm = TRUE),
+    Cuartil_1 = quantile(., 0.25, na.rm = TRUE),
+    Cuartil_3 = quantile(., 0.75, na.rm = TRUE),
+    RIC = IQR(., na.rm = TRUE),
+    Desviación_Típica = sd(., na.rm = TRUE),
+    Varianza = var(., na.rm = TRUE)
+  ),
+  .id = "Variable"
+)
+
+# Formato largo para graficar
+estadisticas_largo <- estadisticas %>%
+  pivot_longer(-Variable, names_to = "Estadística", values_to = "Valor")
+
+# Gráfico comparativo de estadísticas
+ggplot(estadisticas_largo, aes(x = Variable, y = Valor, fill = Estadística)) +
+  geom_col(position = "dodge") +
+  coord_flip() +
+  labs(title = "Estadísticas descriptivas por variable numérica",
+       x = "Variable", y = "Valor") +
+  theme_minimal()
+
+
+```
+El gráfico de estadísticas descriptivas muestra una alta varianza en los valores de los receptores hormonales (`RE` y `RP`) y del índice de proliferación (`Ki67`), lo que indica una gran dispersión en estos marcadores entre los pacientes, reflejando la heterogeneidad biológica de los tumores. En contraste, variables como la edad al diagnóstico (`EDAD_DIAGNOSTICO`), el tamaño tumoral (`TAMAÑO`), el número de antibióticos y el grado histológico (`GRADO`) presentan menor varianza, lo que sugiere mayor homogeneidad entre los casos. Este patrón es consistente con lo que se espera en estudios clínicos: los marcadores moleculares tienden a variar más entre pacientes, mientras que características demográficas como la edad o algunas medidas clínicas son más estables. La visualización también muestra que, en general, la media y la mediana de cada variable están próximas, lo que sugiere distribuciones relativamente simétricas para muchas de ellas, aunque las diferencias observadas en variables como `RE` y `Ki67` podrían indicar asimetría o presencia de valores extremos.
+
+## Análisis exploratorio básico de los datos.
+
+La función summary proporciona resumenes de las distribuciones de las variables de los datos:
+
+```{r warning=FALSE, message=FALSE}
+summary(datos)
+```
+
+El conjunto de datos clínicos está compuesto por 700 observaciones correspondientes a pacientes con cáncer de mama, e incluye tanto variables numéricas como categóricas. La edad al diagnóstico (`EDAD_DIAGNOSTICO`) presenta una media de aproximadamente 52 años, con un rango entre 26 y 79, lo cual es consistente con la distribución esperada en población oncológica femenina. El tamaño tumoral (`TAMAÑO`) varía entre 0.6 y 12 cm, con una media de 3.8 cm, lo que refleja una alta heterogeneidad en la presentación del tumor. Las variables hormonales (`RE`, `RP`, `HER2`) y el índice de proliferación celular (`Ki67`) también muestran una gran dispersión, destacando la variabilidad biológica entre pacientes; en particular, `Ki67` tiene una media cercana al 44% y algunos valores faltantes. La mayoría de las variables categóricas, como `SEXO`, `ESTADO_MENOPAUSICO`, `FENOTIPO_IHQ` y `TIPO_QT_NEOADY_OK`, están almacenadas como caracteres, al igual que las fechas, que deberían ser transformadas al formato `Date` para análisis posteriores (como el de supervivencia). Además, variables como `No_ANTIBIOTICOS` tienen una distribución asimétrica con un valor máximo de 5, indicando que algunas pacientes recibieron múltiples tandas de antibióticos. Esta primera exploración sugiere que el conjunto de datos es adecuado para un análisis clínico multivariable, aunque requerirá limpieza y transformación previa.
+
+# Análisis univariante
+
+## Transformación de Variables Categóricas y Preparación de Datos
+
+Al revisar el contenido y la naturaleza de las variables, se ha considerado adecuado transformar ciertas columnas en factores, dado que representan **categorías clínicas sin relación numérica inherente**. Específicamente, las variables **`Tn`** (clasificación del tamaño tumoral) y **`Nx`** (afectación ganglionar) codifican niveles ordinales clínicos sin una progresión lineal clara, por lo que deben tratarse como variables categóricas para evitar interpretaciones erróneas en los modelos estadísticos.
+
+```{r, warning=FALSE, message=FALSE}
+# Convertir Tn y Nx a factores
+datos$Tn <- as.factor(datos$Tn)
+datos$Nx <- as.factor(datos$Nx)
+
+```
+
+Del mismo modo, la variable **`ESTADIO`**, que indica el estadio clínico del tumor, se representa mediante niveles como "I", "IIA", "IIIB", etc. Tratar esta variable como numérica induciría a modelos a asumir una relación lineal entre los estadios, lo cual no tiene justificación clínica. Al convertirla en un factor, se mejora tanto la interpretación estadística como la visualización en gráficos y tablas.
+
+```{r}
+# Convertir ESTADIO en variable categórica
+datos$ESTADIO <- as.factor(datos$ESTADIO)
+
+# Exploración inicial
+summary(datos$ESTADIO)
+
+# Visualización de la distribución
+barplot(table(datos$ESTADIO), main = "Distribución de Estadios", col = "steelblue")
+pie(table(datos$ESTADIO), main = "Proporción por Estadio", cex = 1.2)
+```
+
+El gráfico de barras evidencia que los estadios IIA y IIB son los más frecuentes, concentrando la mayor parte de los casos, con más de 200 pacientes cada uno. Esto sugiere que una proporción significativa de pacientes fue diagnosticada en etapas intermedias de la enfermedad, lo cual es común en contextos donde el diagnóstico precoz aún no es sistemático.
+
+Por otro lado, los estadios I, IA, IB y IIIC presentan una frecuencia considerablemente menor, indicando que tanto los diagnósticos muy precoces como los más avanzados son menos comunes en esta muestra. Los estadios IIIA y IIIB también tienen una representación notable, aunque menor que los II intermedios.
+
+La gráfica de pastel complementa esta visualización al mostrar la proporción relativa de cada estadio. Se observa nuevamente que IIA e IIB abarcan juntos la mayor parte de la población, seguidos por IIIA y IIIB. Esto aporta una visión clara de la heterogeneidad clínica del grupo estudiado y sugiere que el análisis posterior de respuesta al tratamiento y pronóstico debe contemplar esta variabilidad en la clasificación clínica inicial.
+
+Otras variables como **`HISTOLOGIA`** también deben considerarse categóricas, ya que definen tipos específicos de tejido tumoral sin un orden implícito. 
+
+```{r}
+# Convertir HISTOLOGIA en factor
+datos$HISTOLOGIA <- as.factor(datos$HISTOLOGIA)
+```
+
+En cuanto a las variables numéricas, por ejemplo, `TAMAÑO`, se puede calcular la desviación estándar como medida de dispersión para detectar variabilidad entre casos:
+
+```{r}
+# Desviación estándar del tamaño tumoral
+sd(datos$TAMAÑO, na.rm = TRUE)
+```
+
+
+
+Las variables numéricas en un conjunto de datos clínicos pueden clasificarse en dos tipos:  
+- **Discretas**, que toman valores enteros (como la edad o el número de antibióticos).  
+- **Continuas**, que admiten cualquier valor real dentro de un rango (como el tamaño tumoral en centímetros).
+
+Esta distinción es relevante, especialmente al aplicar pruebas estadísticas en análisis de asociación, ya que algunos métodos requieren conocer si los valores pueden repetirse o si existen **empates (ties)** en la distribución de datos.
+
+A continuación, se realiza un resumen estadístico básico para la variable `EDAD_DIAGNOSTICO`, que representa la edad del paciente al momento del diagnóstico.
+
+```{r, warning=FALSE, message=FALSE}
+# Cálculo de estadísticas básicas
+mean(datos$EDAD_DIAGNOSTICO, na.rm = TRUE)   # Media
+var(datos$EDAD_DIAGNOSTICO, na.rm = TRUE)    # Varianza
+sd(datos$EDAD_DIAGNOSTICO, na.rm = TRUE)     # Desviación estándar
+median(datos$EDAD_DIAGNOSTICO, na.rm = TRUE) # Mediana
+
+# Resumen completo con summary()
+summary(datos$EDAD_DIAGNOSTICO)
+```
+
+
+
+El rango de edad en la muestra va desde los 26 hasta los 99 años, con una mediana de 52 años y una media algo distorsionada (156.3), lo que sugiere la posible presencia de un valor atípico o error de codificación. Este tipo de valores extremos también influyen fuertemente en la varianza y la desviación estándar, por lo que se recomienda realizar una limpieza de valores anómalos antes del análisis definitivo.
+
+
+La representación gráfica de variables numéricas permite identificar patrones de distribución, valores extremos, simetría o asimetría, y otros comportamientos importantes. A continuación, se presentan tres tipos de gráficos:
+
+
+
+```{r}
+hist(datos$EDAD_DIAGNOSTICO,
+     main = "Distribución de la Edad al Diagnóstico",
+     xlab = "Edad",
+     ylab = "Frecuencia",
+     col = "steelblue",
+     border = "white")
+```
+Se observa una distribución aproximadamente simétrica, centrada en torno a los 50 años, que también coincide con la mediana calculada anteriormente. La mayoría de los pacientes se encuentra en el rango de 45 a 65 años, con un pico de frecuencia entre los 45 y 50 años, lo cual es coherente con la edad habitual de diagnóstico del cáncer de mama en mujeres.
+
+Se nota además una disminución progresiva en la frecuencia tanto hacia los extremos inferiores (<40 años) como superiores (>70 años), lo que sugiere que los casos en edades muy jóvenes o muy avanzadas son menos comunes en esta muestra. No se aprecian grandes sesgos ni bimodalidad, lo que indica una distribución bastante regular. 
+
+
+```{r}
+boxplot(datos$EDAD_DIAGNOSTICO, 
+        main = "Boxplot vertical de Edad al Diagnóstico", 
+        ylab = "Edad",
+        col = "lightgray")
+
+boxplot(datos$EDAD_DIAGNOSTICO, 
+        horizontal = TRUE, 
+        main = "Boxplot horizontal de Edad al Diagnóstico", 
+        xlab = "Edad",
+        col = "lightgray")
+```
+Los datos están comprendidos entre aproximadamente 28 y 79 años, con una mediana cercana a los 52 años, lo que concuerda con los estadísticos descriptivos previos. El rango intercuartílico (entre el primer y tercer cuartil) se sitúa entre los 45 y 65 años, indicando que la mayoría de los casos se agrupan en ese intervalo.
+
+Con el objetivo de asegurar la calidad y coherencia de los análisis posteriores, se aplican una serie de pasos de limpieza al conjunto de datos original:
+
+Se eliminan aquellas columnas sin variabilidad (es decir, con un único valor para todos los casos), ya que no aportan información útil al análisis.
+
+Se reemplazan los valores vacíos, representados como cadenas vacías ("") o como texto "NA", por valores faltantes reales (NA) compatibles con el manejo estadístico en R.
+
+Se calcula el porcentaje de valores ausentes por variable, lo que permite identificar columnas con datos incompletos y valorar estrategias de imputación o exclusión.
+
+```{r}
+# Eliminar columnas con un único valor
+datos <- datos[, sapply(datos, function(x) length(unique(na.omit(x))) > 1)]
+
+# Reemplazar cadenas vacías o "NA" como texto por NA real
+datos[] <- lapply(datos, function(x) ifelse(trimws(as.character(x)) %in% c("", "NA"), NA, x))
+
+# Calcular el porcentaje de valores NA por variable
+na_percent <- colMeans(is.na(datos)) * 100
+na_percent
+
+```
+La variable Ki67 y su versión dicotómica KI67_DICOT presentan un 0.43% de valores faltantes (equivalente a 3 casos), lo cual es poco preocupante y fácilmente imputable o descartable según el enfoque.
+
+Las variables Nx y ESTADIO presentan una proporción mínima de 0.14% de valores ausentes (1 caso cada una), también manejable sin comprometer el análisis.
+
+La variable HT_ADY_OK, correspondiente a si la paciente recibió hormonoterapia adyuvante, es la única con una proporción más relevante: un 2.71% de datos faltantes (alrededor de 19 casos). Esta variable deberá ser tratada con especial cuidado en análisis multivariantes o de supervivencia, valorando si conviene imputar, excluir los registros afectados o crear una categoría específica ("Desconocido").
+
+Este proceso de preprocesamiento garantiza que el análisis estadístico se realice sobre un conjunto de datos limpio, homogéneo y técnicamente adecuado, lo cual es esencial para obtener resultados válidos y clínicamente interpretables.
+
+El dataset muestra que la variable `HISTOLOGIA` tiene 10 categorías, siendo "DUCTAL" la más frecuente. La desviación estándar de `TAMAÑO` es 1.93, indicando una dispersión moderada en los datos. Se eliminaron columnas con un solo valor único y se reemplazaron valores vacíos o "NA" en texto por `NA` reales. En general, el porcentaje de valores faltantes es bajo, excepto en `HT_ADY_OK` (2.71%) y en menor medida en `Ki67`, `KI67_DICOT`, `Nx` y `ESTADIO`, lo que podría requerir imputación. El dataset está bastante limpio y estructurado para su análisis.
+
+Vemos que solo hay un hombre, lo eliminamos ya no nos interesa su estudio
+```{r}
+
+
+# Filtrar las filas donde SEXO no sea "H"
+datos <- datos[as.character(datos$SEXO) != "H", ]
+
+
+# Verificar el cambio
+table(datos$SEXO)
+
+
+```
+
+Vamos a observar las variables númericas. Hay enteras como EDAD_DIAGNOSTICO y reales como TAMAÑO
+
+```{r}
+summary(datos$EDAD_DIAGNOSTICO)
+hist(datos$EDAD_DIAGNOSTICO, main="Edad", ylab ="Frec", xlab= "Edad")
+boxplot(datos$EDAD_DIAGNOSTICO)
+```
+
+## Valores perdidos
+
+Los datos faltantes pueden surgir por errores en la recolección, fallos en el almacenamiento o ausencia de respuestas en estudios. Su presencia puede reducir el tamaño de la muestra, distorsionar las distribuciones y generar sesgos en los análisis.
+
+Existen tres tipos principales de datos perdidos: MCAR (completamente aleatorios), MAR (dependen de otras variables observadas) y MNAR (dependen de su propio valor o factores no observados). Dependiendo del tipo, se pueden aplicar diferentes estrategias de manejo. Para datos MCAR, la eliminación de filas con valores faltantes es viable, mientras que para MAR y MNAR es preferible la imputación mediante modelos predictivos como mice, KNN o regresión múltiple.
+
+En primer lugar, las variables numéricas contienen valores extremos representados por el número 999, el cual no tiene un significado válido en el contexto clínico. Estos valores deben tratarse como valores faltantes (NA) para evitar sesgos en el análisis. En segundo lugar, las variables categóricas incluyen la etiqueta Desconocido para indicar datos no registrados. Dado que esta etiqueta impide un análisis adecuado, también se sustituirá por NA.
+
+Para garantizar la calidad del análisis y evitar distorsiones en los modelos estadísticos, se procede a la conversión de estos valores en NA. Esto permitirá gestionarlos correctamente en las etapas posteriores de preprocesamiento e imputación de datos. En R, se utiliza la función `na_if()` de `dplyr` para reemplazar 999 en variables numéricas y "Desconocido" en variables categóricas.
+
+```{r}
+datos[] <- lapply(datos, function(x) {
+  if (is.character(x)) {
+    x <- trimws(x)  # Eliminar espacios en blanco al principio y al final
+    x <- ifelse(x %in% c("", "NA", "N/A", "null", "NULL", "NaN"), NA, x)  # Reemplazar valores problemáticos con NA
+  }
+  return(x)
+})
+```
+
+## Detección de outliers
+
+El análisis de valores atípicos (outliers) es una etapa clave en el preprocesamiento de datos, ya que permite identificar errores de codificación, detectar patrones clínicamente relevantes y mejorar la precisión de los modelos estadísticos. La presencia de outliers puede distorsionar las medidas de tendencia central, inflar la varianza y afectar negativamente los supuestos de normalidad y homogeneidad en muchos análisis inferenciales.
+
+Existen diferentes estrategias para tratar con estos valores extremos. En algunos casos se eliminan por tratarse de errores evidentes; en otros, se analizan por separado o se transforman para mitigar su impacto. Entre los métodos más comunes para su detección destacan el uso del rango intercuartílico (IQR), el cálculo de z-scores y herramientas visuales como los boxplots.
+
+A continuación, se utiliza un boxplot para visualizar los valores atípicos en la variable TAMAÑO, que representa el tamaño del tumor en centímetros. Posteriormente, se aplicará el método del rango intercuartílico, donde un valor se considera atípico si se encuentra fuera del intervalo definido por Q1 - 1.5 × IQR y Q3 + 1.5 × IQR.
+
+```{r}
+library(ggplot2)
+
+# Boxplot original con posibles outliers
+ggplot(datos, aes(y = TAMAÑO)) +
+  geom_boxplot(fill = "lightblue", outlier.color = "red", outlier.shape = 16) +
+  theme_minimal() +
+  ggtitle("Detección de outliers en el tamaño del tumor") +
+  ylab("Tamaño (cm)")
+```
+
+
+Identificación de Outliers mediante IQR
+```{r}
+# Cálculo de IQR
+Q1 <- quantile(datos$TAMAÑO, 0.25, na.rm = TRUE)
+Q3 <- quantile(datos$TAMAÑO, 0.75, na.rm = TRUE)
+IQR <- Q3 - Q1
+
+# Establecer límites para detectar outliers
+limite_inferior <- Q1 - 1.5 * IQR
+limite_superior <- Q3 + 1.5 * IQR
+
+# Filtrar datos dentro del rango aceptado
+datos_sin_outliers <- datos %>%
+  filter(TAMAÑO >= limite_inferior & TAMAÑO <= limite_superior)
+
+# Mostrar el impacto del filtrado
+cat("🔹 Total de registros originales: ", nrow(datos), "\n")
+cat("🔹 Registros tras eliminar outliers: ", nrow(datos_sin_outliers), "\n")
+cat("🔹 Registros eliminados: ", nrow(datos) - nrow(datos_sin_outliers), "\n")
+```
+
+Boxplot tras eliminación de outliers
+```{r, warning=FALSE, message=FALSE }
+library(dplyr)
+library(ggplot2)
+library(patchwork)  # Para combinar gráficos
+library(purrr)
+
+
+# Obtener nombres de las variables numéricas
+variables_numericas <- datos %>%
+  select(where(is.numeric)) %>%
+  colnames()
+
+# Mostrar boxplots uno a uno
+for (var in variables_numericas) {
+  print(
+    ggplot(datos, aes(y = .data[[var]])) +
+      geom_boxplot(fill = "skyblue", outlier.color = "red", outlier.shape = 16) +
+      theme_minimal(base_size = 14) +
+      ggtitle(paste("Boxplot de", var)) +
+      ylab(var)
+  )
+}
+
+
+
+```
+
+El boxplot correspondiente a la variable No_ANTIBIOTICOS revela una distribución fuertemente sesgada a la derecha. La mayoría de las pacientes recibieron entre 0 y 2 tandas de antibióticos, mientras que algunos casos puntuales llegaron hasta 5, siendo identificados como valores atípicos. Aunque estos valores se alejan del patrón general, es probable que reflejen situaciones clínicas reales con infecciones recurrentes o complicaciones durante el tratamiento. Por ello, más que eliminarlos directamente, sería conveniente analizarlos por separado en función del impacto que puedan tener en los resultados.
+
+La variable TAMAÑO muestra una mediana cercana a los 3.3 cm, con un rango intercuartílico entre 2.5 y 5 cm. No obstante, se identifican múltiples outliers por encima de los 8 cm, llegando hasta los 12.5 cm. Estos casos extremos probablemente corresponden a tumores de gran volumen en etapas avanzadas del diagnóstico. Dado que esta variable es clave en la estratificación del estadio clínico y en el pronóstico, se recomienda evaluar si estos valores extremos afectan los modelos posteriores (por ejemplo, regresión logística o supervivencia) y decidir si deben incluirse, transformarse o tratarse por separado.
+
+En lugar de eliminar los outliers detectados en las variables TAMAÑO y No_ANTIBIOTICOS, se optó por mantenerlos, ya que representan situaciones clínicas plausibles. En el caso del tamaño tumoral, los valores extremos reflejan casos avanzados que pueden ser relevantes para el pronóstico. Por otro lado, el número elevado de tandas de antibióticos puede indicar complicaciones clínicas o infecciones persistentes, también relevantes para el estudio. Para mitigar su efecto en los análisis estadísticos, se considera el uso de transformaciones o recodificación categórica cuando sea necesario.
+
+## Análisis de normalidad de una distribución
+
+Comprobar la normalidad de los datos es un paso fundamental en el análisis estadístico, ya que muchas pruebas inferenciales y modelos clásicos —como la t de Student, el ANOVA o la regresión lineal— suponen que las variables involucradas siguen una distribución normal. Si este supuesto no se cumple, es necesario valorar alternativas, como aplicar transformaciones (logarítmica, raíz cuadrada o Box-Cox) o recurrir a pruebas no paramétricas, que no requieren dicha condición.
+
+Aunque existen representaciones más avanzadas como el ajuste de curvas gaussianas, en este estudio se utilizarán exclusivamente los métodos abordados en el temario, centrados en herramientas gráficas y contrastes estadísticos clásicos.
+
+Para analizar la normalidad de una variable, pueden emplearse tanto métodos gráficos como pruebas estadísticas formales:
+
+-Boxplots: útiles para detectar asimetrías y valores extremos que sugieren desviaciones respecto a la normalidad.
+
+-Histogramas: muestran la forma general de la distribución, permitiendo detectar sesgos.
+
+-Gráficos Q-Q (Quantile-Quantile): comparan los cuantiles de la variable observada con los de una distribución normal teórica, y permiten detectar diferencias visuales en la dispersión.
+
+Complementariamente, se aplican pruebas de contraste de hipótesis. Todas ellas comparten la hipótesis nula de normalidad: si el p-valor resultante es menor a 0.05, se rechaza dicha hipótesis, concluyendo que los datos no siguen una distribución normal. El test más comúnmente utilizado en la literatura es el Shapiro-Wilk, especialmente adecuado para muestras pequeñas o medianas (<5000 observaciones). En el caso de muestras más grandes, se pueden emplear pruebas como Kolmogorov-Smirnov o Anderson-Darling.
+
+
+Se evaluó la normalidad de tres variables clínicas relevantes: Ki67, EDAD_DIAGNOSTICO y TAMAÑO, utilizando histogramas, boxplots, gráficos Q-Q y la prueba de Shapiro-Wilk. Los resultados fueron los siguientes:
+
+-Ki67: presentó una distribución claramente asimétrica hacia la derecha, con una acumulación de valores bajos y una cola larga en los valores altos. La prueba de Shapiro-Wilk confirmó la no normalidad de la variable.
+
+-TAMAÑO: mostró un patrón similar, con muchos tumores de pequeño tamaño y presencia de valores extremos. El gráfico Q-Q evidenció desviaciones importantes en ambas colas de la distribución.
+
+-EDAD_DIAGNOSTICO: mostró una distribución aproximadamente simétrica, con forma cercana a la normalidad, aunque la prueba estadística detectó una ligera desviación.
+
+En conjunto, se concluye que las variables Ki67 y TAMAÑO no cumplen con los criterios de normalidad, mientras que EDAD_DIAGNOSTICO podría tratarse como una variable normalmente distribuida con precaución. Por tanto, en el análisis posterior se valorará el uso de transformaciones (como logaritmo natural) o el empleo de pruebas no paramétricas para aquellas variables que no se ajusten a la normalidad.
+
+En caso de que una variable no cumpla con los supuestos de normalidad, existen medidas estadísticas robustas que pueden ser utilizadas para describir su comportamiento:
+
+-Mediana: representa el valor central de la distribución y es menos sensible a los valores extremos que la media.
+
+-Cuartiles y percentiles: permiten describir la dispersión y posición de los datos sin depender de la simetría.
+
+-Rango intercuartílico (RIC): definido como la diferencia entre el tercer y el primer cuartil (Q3 – Q1), mide la variabilidad en la zona central de la distribución y es resistente a outliers. Se visualiza de forma clara en los boxplots.
+
+```{r}
+# Cargar librerías necesarias
+library(ggplot2)
+
+# Definir las variables numéricas de interés
+variables_interes <- c("TAMAÑO", "EDAD_DIAGNOSTICO", "Ki67")
+
+
+# Filtrar solo las variables numéricas
+variables_numericas <- variables_interes[sapply(datos[variables_interes], is.numeric)]
+
+# Análisis de normalidad
+for (var in variables_numericas) {
+  cat("\n--- Análisis de la normalidad para", var, "---\n")
+  
+  # Histogramas y boxplots
+  hist(datos[[var]], main = paste("Histograma de", var), col = "lightblue", breaks = 20)
+  boxplot(datos[[var]], main = paste("Boxplot de", var), col = "lightblue")
+  
+  # Q-Q Plot
+  qqnorm(datos[[var]], main = paste("Q-Q Plot de", var))
+  qqline(datos[[var]], col = "red")
+  
+  # Prueba de Shapiro-Wilk
+  shapiro_test <- shapiro.test(datos[[var]])
+  print(shapiro_test)
+  
+  # Medidas alternativas si la variable no es normal
+  if (shapiro_test$p.value < 0.05) {
+    cat("⚠️ La variable", var, "NO sigue una distribución normal.\n")
+    cat("  - Mediana:", median(datos[[var]], na.rm = TRUE), "\n")
+    cat("  - Rango intercuartílico (RIC):", IQR(datos[[var]], na.rm = TRUE), "\n")
+    cat("  - Cuartiles: Q1 =", quantile(datos[[var]], 0.25, na.rm = TRUE),
+        ", Q3 =", quantile(datos[[var]], 0.75, na.rm = TRUE), "\n")
+  } else {
+    cat("✅ La variable", var, "sigue una distribución normal.\n")
+  }
+}
+
+```
+
+Los resultados indican que las variables **EDAD_DIAGNOSTICO** y **Ki67** no siguen una distribución normal, según el test de Shapiro-Wilk. La mediana de edad al diagnóstico es 51 años, con un rango intercuartílico de 16 años, mientras que la mediana de Ki67 es 40, con un rango intercuartílico de 42. Estos datos sugieren una variabilidad significativa en los niveles de Ki67 y la edad de las pacientes, lo cual es crucial para el análisis estadístico y la interpretación de los resultados clínicos.
+
+Es importante destacar que aunque la variable no siga una distribución normal, sí tiene sentido calcular la media y la varianza, dado que son medidas estadísticas que pueden proporcionar información importante sobre una variable y su distribución. De hecho, la media es un valor que representa el centro de una distribución de datos (indicador de tendencia central, ya que refleja la ubicación de los valores en relación con el centro de la distribución) y se puede calcular para cualquier conjunto de datos independientemente de su distribución. No obstante, hay que tener en cuenta que la media puede estar sesgada por valores atípicos en una distribución que no sea normal, lo que puede distorsionar su interpretación.
+
+
+Depués de este análisis hemos pensado: ¿ Si en vez de poner NA, los sustitiumos por la media, si no sigue distribucion por la mediana?
+
+```{rwarning=FALSE}
+# Cargar librerías necesarias
+library(dplyr)
+
+# Función para calcular la moda
+calcular_moda <- function(x) {
+  ux <- unique(na.omit(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Variables numéricas a tratar
+numeric_vars <- c("TAMAÑO", "GRADO", "EDAD_DIAGNOSTICO")
+
+cat("🔄 Imputación de valores NA basada en normalidad:\n")
+
+for (var in numeric_vars) {
+  if (var %in% names(datos)) {
+    var_data <- na.omit(datos[[var]])
+    
+    if (length(var_data) > 3) {  # Shapiro requiere al menos 3 valores
+      # Evaluar normalidad
+      shapiro_test <- shapiro.test(var_data)
+      p_value <- shapiro_test$p.value
+      
+      # Imputación
+      if (p_value > 0.05) {
+        valor_insertado <- mean(var_data, na.rm = TRUE)
+        metodo <- "MEDIA"
+        simbolo <- "✅"
+      } else {
+        valor_insertado <- calcular_moda(var_data)
+        metodo <- "MODA"
+        simbolo <- "⚠️"
+      }
+
+      datos[[var]][is.na(datos[[var]])] <- valor_insertado
+      cat(simbolo, var, "→ imputado con", metodo, "=", round(valor_insertado, 2), "\n")
+    } else {
+      cat("❌", var, ": no tiene suficientes datos para evaluar normalidad\n")
+    }
+  }
+}
+
+# Mostrar % de NA después del reemplazo
+na_percent_after <- colMeans(is.na(datos)) * 100
+cat("\n📊 Porcentaje de NA tras imputación:\n")
+print(round(na_percent_after[numeric_vars], 2))
+
+# Filtrar las filas donde SEXO no sea "H"
+datos <- subset(datos, SEXO != "H")
+cat("\n🧹 Filtrado aplicado: filas con SEXO ≠ 'H'\n")
+
+# Verificar distribución de SEXO
+cat("📊 Distribución de SEXO después del filtrado:\n")
+print(table(datos$SEXO))
+
+# Análisis de distribución de variables numéricas imputadas
+for (var in numeric_vars) {
+  if (var %in% names(datos)) {
+    cat("\n📈 Análisis de distribución para", var, ":\n")
+    
+    # Histograma
+    hist(datos[[var]],
+         main = paste("Distribución de", var),
+         xlab = var,
+         col = "lightblue", border = "black")
+    
+    # Prueba de normalidad
+    shapiro_test <- shapiro.test(datos[[var]])
+    print(shapiro_test)
+    
+    if (shapiro_test$p.value < 0.05) {
+      cat("⚠️", var, "NO sigue una distribución normal.\n")
+      cat("  - Mediana:", median(datos[[var]], na.rm = TRUE), "\n")
+      cat("  - RIC:", IQR(datos[[var]], na.rm = TRUE), "\n")
+      cat("  - Cuartiles: Q1 =", quantile(datos[[var]], 0.25, na.rm = TRUE),
+          ", Q3 =", quantile(datos[[var]], 0.75, na.rm = TRUE), "\n")
+    } else {
+      cat("✅", var, "sigue una distribución normal.\n")
+    }
+  }
+}
+
+```
+
+⚠️ Sustituyendo NA en TAMAÑO con la MODA: 3 ⚠️ Sustituyendo NA en GRADO con la MODA: 3 ⚠️ Sustituyendo NA en EDAD_DIAGNOSTICO con la MODA: 50
+
+El histograma que representa la distribución de la variable EDAD_DIAGNOSTICO, a simple vista, la distribución puede parecer simétrica, lo cual podría sugerir una normalidad. En concreto, se imputaron los valores ausentes con los valores más frecuentes: 3 cm para TAMAÑO, grado 3 para GRADO y 50 años para EDAD_DIAGNOSTICO, lo que permitió reducir el porcentaje de datos faltantes al 0% en las tres variables. El análisis de distribución confirmó que ninguna de las tres variables cumple con el supuesto de normalidad según la prueba de Shapiro-Wilk (p < 0.05 en todos los casos), observándose además asimetría y curtosis en sus respectivos histogramas. Las medidas de tendencia y dispersión refuerzan esta conclusión: TAMAÑO mostró una mediana de 3.3 cm y un rango intercuartílico (RIC) de 2.5, GRADO tuvo una mediana de 3 con RIC = 1, mientras que EDAD_DIAGNOSTICO presentó una mediana de 51 años y un RIC de 16 años. Estos resultados sugieren que, en análisis posteriores, será necesario utilizar enfoques estadísticos no paramétricos o transformar las variables para garantizar la validez de los modelos.
+
+
+
+
+## Mutación de datos
+
+La recodificación de variables categóricas es una etapa clave en el preprocesamiento, especialmente en estudios clínicos. Esta práctica permite reorganizar o agrupar categorías existentes con el objetivo de optimizar el análisis posterior. Las principales razones para recodificar son:
+
+Agrupación de categorías con baja frecuencia: Algunas categorías poco representadas pueden generar estimaciones inestables o sesgadas. Agruparlas con otras categorías clínicamente similares aumenta la potencia estadística sin perder relevancia interpretativa.
+
+La discretización consiste en convertir una variable numérica continua en una variable categórica, agrupando sus valores en rangos o intervalos definidos. En contextos clínicos, esta práctica tiene múltiples ventajas:
+
+-Interpretación médica más clara: Valores numéricos pueden carecer de significado clínico aislado, pero adquieren relevancia al ser clasificados en categorías clínicas estandarizadas (p. ej., “normal”, “alto riesgo”, “crítico”).
+
+-Reducción del impacto del ruido: Agrupar valores similares reduce la sensibilidad a pequeñas variaciones causadas por errores de medición o fluctuaciones naturales.
+
+-Estabilidad en modelos de clasificación: Algunos algoritmos, como los árboles de decisión, funcionan mejor con variables discretizadas, ya que mejoran la segmentación y reducen la complejidad del modelo.
+
+Centrarse solo en los tipos **ductal** y **lobulillar** es una mejor opción porque tienen suficientes datos para un análisis confiable (625 y 42 casos, respectivamente), mientras que las demás categorías tienen frecuencias muy bajas, lo que introduce ruido y dificulta obtener conclusiones significativas. Incluir datos con muy pocas observaciones puede generar sesgos y hacer que el análisis no sea representativo. Al enfocarnos en estos dos tipos principales, obtenemos comparaciones más robustas y evitamos problemas de desbalance en los datos.
+
+Recodificamos los datos de la siguiente manera:
+
+Las variables Tn y Nx son categóricas aunque las etiquetas estén representadas mediante números
+
+TAMAÑO_CAT :
+<= 2 : "Pequeño",
+o > 2 & TAMAÑO <= 5 : "Mediano"
+o > 5 : "Grande"
+
+GRADO_CAT:
+1/2: 1, 2
+3: 3
+
+HISTOLOGIA_CAT:
+DUCTAL: DUCTAL
+NO DUCTAL: Resto
+
+Ki67_CAT:
+<=14: Si Ki67 es menor o igual que 14
+o >14: Si ki67 es mayor que 14
+
+FENOTIPO_IHQ_CAT:
+LUMINAL: LUMINAL A, LUMINAL B
+HER2: LUMINAL-HER2, HER2
+TRIPLE NEGATIVO: Resto
+
+ESTADIO_CAT:
+I: I, IA, IB
+II: II, IIA, IIB
+III: III, IIIA, IIIB, IIIC
+
+QT_CAT:
+NO antiHER2: ANTRACICLINAS, ANTRACICLINAS-TAXANOS, ANTRACICLINAS-TAXANOS-PLATINOS, TAXANOS
+antiHER2: QUIMIOTERAPIA-ANTIHER2, QUIMIOTERAPIA-ANTIHER2DOBLE
+INMUNO: QUIMIOTERAPIA-ANTIHER2-INMUNOTERAPIA, QUIMIOTERAPIA-INMUNOTERAPIA
+
+No_ANTIBIOTICOS_CAT:
+Una vez: 1
+Dos veces o más: >=2
+
+
+HER2_CAT;
+Hay muchos datos diferentes, recomendamos sinmplificarlo en positivo y negativo si no tine un "+"
+
+La variable de estudio, la respuesta completa patológica RCP, se calculará a partir de la variable RCB (cantidad de tumor residual) de la siguiente forma:
+
+RCP_1 (repuesta completa patológica):
+SI: RCB-0, RCB-1
+NO: RCB-2, RCB-3
+
+
+También reemplazamos los valores vacíos ("" o "NA" como string) por NA en todo el dataset y eliminamos aquellas edades erroneas o ilógicas. 
+
+```{r, warning=FALSE}
+library(dplyr)
+library(DT)
+
+#  Eliminar columnas con un único valor (sin variabilidad)
+datos <- datos[, sapply(datos, function(x) length(unique(x)) > 1)]
+
+#  Reemplazar valores vacíos o "NA" (como texto) por NA reales
+datos[] <- lapply(datos, function(x) ifelse(x == "" | x == "NA", NA, x))
+
+# Verificar imputación correcta de NA
+colSums(is.na(datos))
+
+#  Corrección de EDAD_DIAGNOSTICO (rango razonable: 0–120)
+datos$EDAD_DIAGNOSTICO <- as.numeric(as.character(datos$EDAD_DIAGNOSTICO))
+datos$EDAD_DIAGNOSTICO <- ifelse(datos$EDAD_DIAGNOSTICO < 0 | datos$EDAD_DIAGNOSTICO > 120, NA, datos$EDAD_DIAGNOSTICO)
+
+#Recodificación de variables y nuevas categorías
+datos <- datos %>%
+  mutate(
+    # Tn y Nx como factores categóricos (aunque sus valores sean numéricos)
+    Tn = as.factor(Tn),
+    Nx = as.factor(Nx),
+
+    # Categorización de tamaño tumoral
+    TAMAÑO_CAT = case_when(
+      TAMAÑO <= 2 ~ "Pequeño",
+      TAMAÑO > 2 & TAMAÑO <= 5 ~ "Mediano",
+      TAMAÑO > 5 ~ "Grande",
+      TRUE ~ NA_character_
+    ) %>% as.factor(),
+
+    # Agrupación del grado histológico
+    GRADO_CAT = case_when(
+      GRADO %in% c(1, 2) ~ "1/2",
+      GRADO == 3 ~ "3",
+      TRUE ~ as.character(GRADO)
+    ) %>% as.factor(),
+
+    # Simplificación de histología: ductal vs no ductal
+    HISTOLOGIA = case_when(
+      HISTOLOGIA == "DUCTAL" ~ "Ductal",
+      TRUE ~ "No Ductal"
+    ) %>% as.factor(),
+
+    # Discretización de Ki67
+    Ki67_CAT = case_when(
+      Ki67 <= 14 ~ "<=14",
+      Ki67 > 14 ~ ">14",
+      TRUE ~ NA_character_
+    ) %>% as.factor(),
+
+    # Reagrupación de fenotipo IHQ
+    FENOTIPO_IHQ = case_when(
+      grepl("Luminal", FENOTIPO_IHQ, ignore.case = TRUE) ~ "Luminal",
+      grepl("Her2", FENOTIPO_IHQ, ignore.case = TRUE) ~ "Her2",
+      TRUE ~ "Triple Negativo"
+    ) %>% as.factor(),
+
+    # Agrupación de estadio
+    ESTADIO_CAT = case_when(
+      ESTADIO %in% c("I", "IA", "IB", "IC") ~ "I",
+      ESTADIO %in% c("II", "IIA", "IIB") ~ "II",
+      TRUE ~ "III"
+    ) %>% as.factor(),
+
+    # Categorización de tratamiento neoadyuvante
+    QT_CAT = case_when(
+      TIPO_QT_NEOADY_OK %in% c("ANTRACICLINAS", "ANTRACICLINAS-TAXANOS", "ANTRACICLINAS-TAXANOS-PLATINOS", "TAXANOS") ~ "NO antiHER2",
+      TIPO_QT_NEOADY_OK %in% c("QUIMIOTERAPIA-ANTIHER2", "QUIMIOTERAPIA-ANTIHER2DOBLE", "ANTIHER2") ~ "antiHER2",
+      TRUE ~ "INMUNO"
+    ) %>% as.factor(),
+
+    # Recodificación del número de tandas de antibióticos
+    No_ANTIBIOTICOS_CAT = case_when(
+      No_ANTIBIOTICOS == 1 ~ "Una vez",
+      No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+      No_ANTIBIOTICOS == 0 ~ NA_character_
+    ) %>% as.factor(),
+
+    # Clasificación de HER2 como positivo/negativo
+    HER2_CAT = case_when(
+      grepl("\\+", HER2) ~ "Positivo",
+      TRUE ~ "Negativo"
+    ) %>% as.factor(),
+
+    # Categorización de respuesta patológica completa
+    RCP_1 = case_when(
+      RCB == "RCB-0" ~ "SI",
+      RCB %in% c("RCB-I", "RCB-II", "RCB-III") ~ "NO",
+      TRUE ~ NA_character_
+    ) %>% as.factor()
+  )
+
+# 6. Verificar estructura final
+str(datos)
+
+# 7. Visualización interactiva
+
+datos %>%
+  head(10) %>%
+  kable("html", caption = "Vista preliminar de las primeras observaciones del conjunto de datos clínicos") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = TRUE,
+                position = "center") %>%
+  scroll_box(width = "100%", height = "400px")
+
+```
+El análisis del conjunto de datos revela una estructura limpia y bien organizada, compuesta por 699 observaciones y 35 variables. Tras los procesos de imputación y limpieza, la mayoría de las variables clave no presentan valores faltantes, a excepción de Ki67, KI67_DICOT y HT_ADY_OK, con 3, 3 y 19 casos ausentes respectivamente, lo que representa un impacto fácilmente gestionable. 
+
+
+```{r,warning=FALSE}
+library(dplyr)
+
+# 1. Mostrar conteo de valores NA antes de imputar
+cat("🔍 Valores NA antes de la imputación:\n")
+na_antes <- colSums(is.na(datos))
+print(na_antes[na_antes > 0])
+
+# 2. Imputar Ki67 con la mediana (distribución no normal)
+mediana_ki67 <- median(datos$Ki67, na.rm = TRUE)
+datos$Ki67[is.na(datos$Ki67)] <- mediana_ki67
+
+# 3. Recalcular KI67_DICOT a partir de la variable imputada y corregir clasificación de No_ANTIBIOTICOS_CAT
+datos <- datos %>%
+  mutate(KI67_DICOT = case_when(
+    Ki67 <= 14 ~ "<=14",
+    Ki67 > 14 ~ ">14",
+    TRUE ~ NA_character_
+  ) %>% as.factor())
+
+datos <- datos %>%
+  mutate(No_ANTIBIOTICOS_CAT = case_when(
+    No_ANTIBIOTICOS == 0 ~ "Ninguno",
+    No_ANTIBIOTICOS == 1 ~ "Una vez",
+    No_ANTIBIOTICOS >= 2 ~ "Dos veces o más",
+    TRUE ~ NA_character_
+  ) %>% as.factor())
+
+# Verificar que no hay NAs (salvo si faltan datos en No_ANTIBIOTICOS original)
+cat("\n📊 Distribución de No_ANTIBIOTICOS_CAT:\n")
+print(table(datos$No_ANTIBIOTICOS_CAT, useNA = "ifany"))
+
+# 4. Imputar HT_ADY_OK con la moda (más frecuente)
+moda_ht <- names(sort(table(datos$HT_ADY_OK), decreasing = TRUE))[1]
+datos$HT_ADY_OK[is.na(datos$HT_ADY_OK)] <- moda_ht
+
+# 5. Mostrar NA después de la imputación
+cat("\n✅ Valores NA después de la imputación:\n")
+na_despues <- colSums(is.na(datos))
+print(na_despues[na_despues > 0])
+
+# 6. Confirmar visualmente con un resumen
+cat("\n📋 Resumen final de las variables imputadas:\n")
+summary(datos[, c("Ki67", "KI67_DICOT", "HT_ADY_OK")])
+
+```
+Primero, identificamos y tratamos los valores ausentes, imputando `Ki67` con la mediana debido a su distribución asimétrica, y regenerando `KI67_DICOT` a partir de la variable corregida. Para `HT_ADY_OK`, se aplicó imputación con la moda, dada su naturaleza categórica y su relevancia clínica. También transformamos las variables `Tn` y `Nx` en factores, ya que, aunque codificadas numéricamente, representan estadios clínicos cualitativos. En cuanto a `No_ANTIBIOTICOS_CAT`, corregimos su clasificación al considerar explícitamente el valor `0` como "Ninguno", evitando que se trate erróneamente como NA y permitiendo diferenciar entre pacientes que no recibieron antibióticos, los que recibieron una vez, y aquellos con múltiples tandas. 
+
+La variable EDAD_DIAGNOSTICO se encuentra debidamente numerizada y acotada dentro de un rango clínicamente razonable. Por otro lado, variables como ESTADIO_CAT presentan una única categoría registrada, lo que sugiere una falta de variabilidad que podría limitar su utilidad analítica. Finalmente, se observa que las variables recodificadas (TAMAÑO_CAT, GRADO_CAT, HER2_CAT, Ki67_CAT, etc.) han sido correctamente generadas, y el dataset está en condiciones óptimas para ser utilizado en análisis descriptivos, modelos predictivos y pruebas de asociación clínica.
+
+# Análisis bivariante
+
+El análisis bivariante permite explorar la relación entre dos variables, proporcionando información esencial sobre si una diferencia observada o una posible asociación en los datos es estadísticamente significativa o simplemente atribuible al azar. Para ello, se aplican diversas pruebas estadísticas que generan un p-valor, un estadístico de prueba y, en algunos casos, intervalos de confianza, los cuales permiten cuantificar la magnitud y dirección del efecto en la población.
+
+Dependiendo del tipo de variables involucradas, se aplican diferentes métodos:
+
+-Para dos variables numéricas, se utilizan correlaciones de Pearson (si ambas variables siguen una distribución normal) o Spearman (cuando no se cumple la normalidad).
+
+-En el caso de combinaciones de una variable numérica y una categórica, se emplean pruebas como el t-test o Wilcoxon (para variables categóricas binarias), y ANOVA o Kruskal-Wallis (cuando hay más de dos niveles en la variable categórica).
+
+-Las relaciones entre dos variables categóricas se evalúan mediante pruebas de Chi-cuadrado, o en su defecto, Fisher exacta cuando los valores esperados en las celdas son bajos.
+
+A continuación, se amplía el análisis previo de normalidad, pero desde una perspectiva bivariante, comparando las interacciones entre variables relevantes.
+
+Por ejemplo, al representar un gráfico de dispersión entre EDAD_DIAGNOSTICO y TAMAÑO, junto con una línea de tendencia, podemos identificar visualmente la presencia de una relación entre ambas variables. Una pendiente positiva indicaría una relación directa, mientras que una pendiente negativa reflejaría una relación inversa. Además, el coeficiente de correlación permite cuantificar esta relación: valores cercanos a +1 indican una correlación positiva fuerte, mientras que valores cercanos a −1 sugieren una correlación negativa fuerte.
+
+```{r, warning=FALSE, message=FALSE}
+# Cargar librerías necesarias
+library(ggpubr)
+library(dplyr)
+library(moments)
+library(ggplot2)
+
+# Lista de variables numéricas
+vars_num <- c("EDAD_DIAGNOSTICO", "TAMAÑO", "GRADO", "RE", "RP", "Ki67", "ESTADIO")
+
+# Crear dataframe para resultados
+resultados_correlacion <- data.frame(
+  Variable_1 = character(),
+  Variable_2 = character(),
+  Metodo = character(),
+  Correlacion = numeric(),
+  P_valor = numeric(),
+  Interpretacion = character(),
+  stringsAsFactors = FALSE
+)
+
+# Función para evaluar normalidad
+es_normal <- function(variable) {
+  if (length(variable) > 50) {
+    skewness_value <- skewness(variable, na.rm = TRUE)
+    kurtosis_value <- kurtosis(variable, na.rm = TRUE)
+    return(abs(skewness_value) < 2 & abs(kurtosis_value - 3) < 2)
+  } else {
+    return(shapiro.test(variable)$p.value > 0.05)
+  }
+}
+
+# Bucle para análisis de correlación y generación de gráficos
+for (i in 1:(length(vars_num)-1)) {
+  for (j in (i+1):length(vars_num)) {
+    var1 <- datos[[vars_num[i]]]
+    var2 <- datos[[vars_num[j]]]
+    
+    # Evaluar normalidad
+    normal1 <- es_normal(var1)
+    normal2 <- es_normal(var2)
+    metodo <- ifelse(normal1 & normal2, "pearson", "spearman")
+
+    # Correlación
+    cor_test <- cor.test(var1, var2, method = metodo)
+    cor_valor <- cor_test$estimate
+    p_valor <- cor_test$p.value
+
+    # Interpretación
+    interpretacion <- case_when(
+      abs(cor_valor) >= 0.9 ~ "Muy fuerte",
+      abs(cor_valor) >= 0.7 ~ "Fuerte",
+      abs(cor_valor) >= 0.5 ~ "Moderada",
+      abs(cor_valor) >= 0.3 ~ "Débil",
+      TRUE ~ "Muy débil o nula"
+    )
+
+    # Guardar resultado
+    resultados_correlacion <- resultados_correlacion %>%
+      add_row(
+        Variable_1 = vars_num[i],
+        Variable_2 = vars_num[j],
+        Metodo = metodo,
+        Correlacion = round(cor_valor, 3),
+        P_valor = round(p_valor, 5),
+        Interpretacion = interpretacion
+      )
+
+    # Generar gráfico de dispersión con regresión lineal
+    p <- ggplot(datos, aes_string(x = vars_num[i], y = vars_num[j])) +
+      geom_point(alpha = 0.5) +
+      geom_smooth(method = "lm", color = "blue", se = FALSE) +
+      labs(
+        x = vars_num[i],
+        y = vars_num[j],
+        title = paste("Relación entre", vars_num[i], "y", vars_num[j])
+      ) +
+      theme_minimal()
+
+    print(p)
+  }
+}
+
+# Mostrar tabla de resultados
+print(resultados_correlacion)
+
+```
+Los resultados del análisis bivariante muestran correlaciones que, en general, son coherentes con el conocimiento clínico actual sobre el cáncer de mama. La mayoría de las asociaciones observadas son muy débiles o nulas, lo que sugiere que muchas de estas variables no están directamente relacionadas de forma lineal, o bien que su efecto podría estar mediado por otros factores clínicos o moleculares.
+
+Entre las relaciones más relevantes, destaca una correlación moderada entre TAMAÑO y ESTADIO (r = 0.507, p < 0.001), lo cual es esperable, ya que el tamaño del tumor es un componente directo del sistema de estadificación TNM. Asimismo, se observa una relación moderada entre RE y RP (r = 0.630), consistente con la coexpresión habitual de receptores hormonales en los tumores luminales.
+
+-GRADO y Ki67 (r = 0.445): lo que indica que los tumores de mayor grado histológico presentan una mayor tasa de proliferación celular, en línea con su biología más agresiva.
+
+-RE y Ki67 (r = -0.422), y RP y Ki67 (r = -0.334): estas correlaciones negativas respaldan que a mayor proliferación tumoral, menor expresión de receptores hormonales, lo cual es característico de tumores menos diferenciados.
+
+-GRADO y RE (r = -0.366): lo que sugiere que los tumores de alto grado tienden a perder la expresión estrogénica, volviéndose menos hormonodependientes.
+
+Por otro lado, muchas de las correlaciones entre variables clínicas como EDAD_DIAGNOSTICO, TAMAÑO, RE, RP o ESTADIO presentan valores cercanos a cero y no alcanzan significación estadística, indicando ausencia de relación lineal directa. Por ejemplo, la relación entre EDAD_DIAGNOSTICO y TAMAÑO fue prácticamente nula (r = 0.018), y la mayoría de los pares similares presentaron resultados similares.
+
+
+```{r, warning=FALSE, message=FALSE}
+# Cargar librerías necesarias
+library(dplyr)
+library(ggpubr)
+library(moments)
+library(ggplot2)
+
+# Obtener clases de columnas
+tipos <- sapply(datos, class)
+
+# Forzar TN y NX como factores (categóricas)
+datos$Tn <- as.factor(datos$Tn)
+datos$Nx <- as.factor(datos$Nx)
+
+
+# Identificar variables numéricas y categóricas
+vars_numericas <- names(tipos)[tipos %in% c("numeric", "integer")]
+vars_categoricas <- names(tipos)[tipos %in% c("character", "factor")]
+
+# Crear combinaciones válidas: numérica vs categórica
+vars_num_cat <- expand.grid(
+  Variable_Numerica = vars_numericas,
+  Variable_Categorica = vars_categoricas,
+  stringsAsFactors = FALSE
+) %>%
+  filter(Variable_Numerica != Variable_Categorica)
+
+# Crear un dataframe para guardar resultados
+resultados_num_cat <- data.frame(
+  Variable_Numerica = character(),
+  Variable_Categorica = character(),
+  Metodo = character(),
+  Estadistico = numeric(),
+  P_valor = numeric(),
+  Interpretacion = character(),
+  stringsAsFactors = FALSE
+)
+
+# Función para evaluar normalidad
+es_normal <- function(variable) {
+  if (!is.numeric(variable)) return(FALSE)
+  variable <- na.omit(variable)
+  if (length(variable) == 0) return(FALSE)
+  
+  if (length(variable) > 50) {
+    skewness_value <- skewness(variable)
+    kurtosis_value <- kurtosis(variable)
+    return(abs(skewness_value) < 2 & abs(kurtosis_value - 3) < 2)
+  } else {
+    return(shapiro.test(variable)$p.value > 0.05)
+  }
+}
+
+# Bucle principal
+for (i in seq_len(nrow(vars_num_cat))) {
+  var_num_name <- vars_num_cat$Variable_Numerica[i]
+  var_cat_name <- vars_num_cat$Variable_Categorica[i]
+  
+  var_num <- datos[[var_num_name]]
+  var_cat <- as.factor(datos[[var_cat_name]])
+  
+  # Validación
+  if (!is.numeric(var_num) || length(unique(na.omit(var_cat))) < 2) next
+  
+  metodo <- ""
+  estadistico <- NA
+  p_valor <- NA
+  interpretacion <- ""
+  
+  normal <- es_normal(var_num)
+  
+  # Test según número de niveles
+  if (length(unique(var_cat)) == 2) {
+    try({
+      if (normal) {
+        test <- t.test(var_num ~ var_cat)
+        metodo <- "T-test"
+        estadistico <- test$statistic
+        p_valor <- test$p.value
+      } else {
+        test <- wilcox.test(var_num ~ var_cat)
+        metodo <- "Wilcoxon"
+        estadistico <- test$statistic
+        p_valor <- test$p.value
+      }
+    }, silent = TRUE)
+    
+    # 🟢 SOLO generar boxplot si la variable categórica es RCP_1
+    if (var_cat_name == "RCP_1") {
+      p <- datos %>%
+        filter(!is.na(.data[[var_cat_name]]), !is.na(.data[[var_num_name]])) %>%
+        ggplot(aes_string(x = var_cat_name, y = var_num_name, fill = var_cat_name)) +
+        geom_boxplot() +
+        stat_compare_means(method = metodo) +
+        labs(
+          title = paste("Distribución de", var_num_name, "según", var_cat_name),
+          x = var_cat_name,
+          y = var_num_name,
+          fill = var_cat_name
+        ) +
+        theme_minimal()
+      
+      print(p)
+    }
+    
+  } else {
+    # Más de dos niveles
+    try({
+      if (normal) {
+        modelo <- aov(var_num ~ var_cat)
+        resumen <- summary(modelo)[[1]]
+        metodo <- "ANOVA"
+        estadistico <- resumen[["F value"]][1]
+        p_valor <- resumen[["Pr(>F)"]][1]
+      } else {
+        test <- kruskal.test(var_num ~ var_cat)
+        metodo <- "Kruskal-Wallis"
+        estadistico <- test$statistic
+        p_valor <- test$p.value
+      }
+    }, silent = TRUE)
+  }
+  
+  if (!is.na(p_valor)) {
+    interpretacion <- case_when(
+      p_valor < 0.001 ~ "Diferencia muy significativa",
+      p_valor < 0.01  ~ "Diferencia significativa",
+      p_valor < 0.05  ~ "Diferencia marginalmente significativa",
+      TRUE            ~ "No hay diferencia significativa"
+    )
+    
+    resultados_num_cat <- resultados_num_cat %>%
+      add_row(
+        Variable_Numerica = var_num_name,
+        Variable_Categorica = var_cat_name,
+        Metodo = metodo,
+        Estadistico = round(estadistico, 3),
+        P_valor = round(p_valor, 5),
+        Interpretacion = interpretacion
+      )
+  }
+}
+
+# Mostrar tabla de resultados
+print(resultados_num_cat)
+
+
+
+```
+Con base en los 200 análisis,muchas asociaciones no resultaron estadísticamente significativas, lo cual es común en contextos clínicos con múltiples factores interrelacionados. Sin embargo, destacan varias asociaciones especialmente en variables relevantes como `GRADO`, `RE`, `RP` y `Ki67` frente a categorías como `FENOTIPO_IHQ`, `RCB`, `GRADO_CAT`, `HT_ADY_OK`, o `KI67_DICOT`, lo que confirma que tumores de mayor agresividad tienden a tener mayor proliferación celular (Ki67) y menor expresión de receptores hormonales (RE y RP).
+
+Por ejemplo, `Ki67` mostró diferencias muy significativas según `GRADO_CAT`, `FENOTIPO_IHQ`, y `RCP_1`, lo que refuerza su valor como marcador pronóstico. `RE` también presentó diferencias claras frente a `HER2_CAT`, `RCB` y `HT_ADY_OK`, reflejando la relación inversa entre receptor hormonal y agresividad tumoral. Además, variables como `TAMAÑO` y `ESTADIO` también mostraron diferencias muy significativas frente a categorías como `Tn`, `Nx`, y `RCP_1`, apoyando su inclusión en modelos predictivos.
+
+En contraste, muchas otras asociaciones como `EDAD_DIAGNOSTICO` con múltiples variables categóricas no resultaron significativas, lo que indica que la edad al diagnóstico no siempre impacta directamente en las características biológicas del tumor. También destaca que `No_ANTIBIOTICOS` rara vez mostró diferencias significativas, salvo en su relación con `ANTIBIOTICO` (como era esperable), lo que sugiere una influencia limitada del número de tandas de antibióticos, al menos de forma univariante.
+
+Sin embargo, sí se detectó asociación significativa importante: el valor de p para la relación entre Tn (el tamaño tumoral clínico) y FECHA_DIAGNOSTICO fue 0.00097, lo que indica una diferencia muy significativa. Esto podría interpretarse como una tendencia temporal en el tamaño del tumor al momento del diagnóstico, posiblemente influenciada por cambios en el diagnóstico precoz, el acceso a servicios de salud o modificaciones en los criterios clínicos a lo largo del tiempo.
+
+Finalmente, se sugiere que los pacientes con tumores más pequeños tienen mayor probabilidad de alcanzar una RCP.
+
+En cuanto a los boxplots, apreciamos diferencias notables en varias variables en función de la respuesta completa patológica (`RCP_1`). Se observa, por ejemplo, que los pacientes que lograron una RCP (`SI`) tienden a tener tumores más pequeños en comparación con quienes no lo lograron (`NO`), lo cual es consistente con la literatura clínica. En otro, los niveles de receptores de progesterona (`RP`) son visiblemente más altos en pacientes sin RCP, mientras que en los que sí respondieron completamente, los valores de `RP` son cercanos a cero. Esto sugiere que una baja expresión hormonal podría estar asociada a una mejor respuesta a la quimioterapia, un patrón compatible con fenotipos más agresivos (como los triple negativos) que suelen responder mejor a estos esquemas. Ambas visualizaciones refuerzan hallazgos clínicamente relevantes.
+
+```{r, warning=FALSE, message=FALSE}
+# Cargar librerías necesarias
+library(dplyr)
+library(ggplot2)
+library(rlang)
+
+# 1. Limpiar nombres de columnas de saltos de línea
+names(datos) <- gsub("[\\n\\r]", "", names(datos))
+
+# 2. Vector de variables categóricas de interés
+vars_cat_names <- c("RCP_1", "HT_ADY_OK", "RECIDIVA", "ESTADO_ULTIMO_CONTROL", "SEXO",
+                    "ESTADO_MENOPAUSICO", "TIPO_CIRUGIA", "RT", "TAMAÑO_CAT",
+                    "GRADO_CAT", "Ki67_CAT", "ESTADIO_CAT", "Tn", "Nx")
+
+# 3. Generar todas las combinaciones posibles de pares (sin repeticiones)
+vars_cat <- combn(vars_cat_names, 2, simplify = FALSE)
+
+# 4. Filtrar combinaciones que realmente existen en el dataset
+vars_cat <- vars_cat[sapply(vars_cat, function(pair) all(pair %in% colnames(datos)))]
+
+
+# 4. Crear dataframe vacío para almacenar resultados
+resultados <- data.frame(
+  Variable_1 = character(),
+  Variable_2 = character(),
+  Metodo = character(),
+  P_valor = numeric(),
+  Interpretacion = character(),
+  stringsAsFactors = FALSE
+)
+
+# 5. Bucle por cada par de variables
+for (pair in vars_cat) {
+  var1 <- pair[1]
+  var2 <- pair[2]
+  
+  # Filtrar filas sin NA en las dos variables
+  df_sub <- datos %>% filter(!is.na(.data[[var1]]) & !is.na(.data[[var2]]))
+  
+  # Crear tabla de contingencia
+  tabla <- table(df_sub[[var1]], df_sub[[var2]])
+  
+  # TEST: Chi-cuadrado o Fisher con fallback a simulación
+  if (any(chisq.test(tabla)$expected <= 5)) {
+    test_result <- tryCatch({
+      fisher.test(tabla)
+    }, error = function(e) {
+      fisher.test(tabla, simulate.p.value = TRUE, B = 5000)
+    })
+    metodo <- "Fisher"
+  } else {
+    test_result <- chisq.test(tabla)
+    metodo <- "Chi-cuadrado"
+  }
+
+  # Añadir resultados al dataframe
+  resultados <- rbind(resultados, data.frame(
+    Variable_1 = var1,
+    Variable_2 = var2,
+    Metodo = metodo,
+    P_valor = round(test_result$p.value, 5),
+    Interpretacion = ifelse(test_result$p.value < 0.05, "✅ Significativa", "❌ No significativa")
+  ))
+
+  # 6. Gráfico de barras si una de las variables es RCP_1
+  if ("RCP_1" %in% pair) {
+    var_x <- ifelse(var1 == "RCP_1", var2, var1)
+    
+    grafico <- ggplot(df_sub, aes(x = !!sym(var_x), fill = RCP_1)) +
+      geom_bar(position = "fill") +
+      labs(
+        title = paste("Distribución de RCP_1 por", var_x),
+        y = "Proporción", x = var_x, fill = "RCP_1"
+      ) +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5))
+
+    print(grafico)
+  }
+}
+
+# 7. Mostrar resultados ordenados por significancia
+resultados <- resultados %>% arrange(P_valor)
+print(resultados)
+
+
+```
+
+Cuando se analizan dos variables categóricas, como la respuesta al tratamiento (RCP_1) y el grado del tumor (GRADO_CAT), empleamos tablas de contingencia para visualizar la distribución de los datos y pruebas estadísticas como el test de Chi-cuadrado o Fisher para determinar la significancia de las diferencias. En este caso, la tabla de contingencia muestra una diferencia en la distribución de la respuesta entre los niveles de GRADO_CAT. 
+
+El análisis de asociación entre variables categóricas revela múltiples relaciones clínicamente relevantes. La respuesta completa patológica (RCP_1) muestra una asociación estadísticamente significativa con la hormonoterapia adyuvante (HT_ADY_OK) (p ≈ 0.0002) y una relación altamente significativa con la recidiva tumoral (RECIDIVA) (p < 0.00000002). Estos resultados sugieren que alcanzar una RCP podría estar relacionado con una menor probabilidad de recurrencia y una mayor indicación de hormonoterapia.
+
+Asimismo, HT_ADY_OK también se asocia con RECIDIVA (p ≈ 0.0216), lo cual puede indicar un efecto protector del tratamiento hormonal frente a la recaída. En línea con la práctica clínica, se observa una fuerte relación entre el estado menopáusico y el uso de hormonoterapia (p ≈ 0.0002), reflejando el criterio terapéutico habitual según el perfil hormonal del paciente.
+
+El tipo de cirugía (TIPO_CIRUGIA) también se asocia significativamente con la recidiva (p ≈ 0.0043), posiblemente indicando que ciertos abordajes quirúrgicos podrían estar ligados a un mayor o menor riesgo de recurrencia. Por otra parte, se identifica una asociación significativa entre el grado tumoral (GRADO_CAT) y la recidiva (p ≈ 0.0022), lo que sugiere que tumores de alto grado histológico podrían presentar un comportamiento más agresivo.
+
+Además, el índice proliferativo (Ki67_CAT) se relaciona con el uso de hormonoterapia (p ≈ 0.0002), reforzando su papel como biomarcador en la toma de decisiones terapéuticas. Por el contrario, algunas asociaciones no resultaron significativas, como el sexo (SEXO) con RCP_1 (p = 1) y el tamaño categorizado del tumor (TAMAÑO_CAT) con RCP_1 (p ≈ 0.319), indicando que estas variables no muestran relación directa con la respuesta al tratamiento en este análisis.
+
+Finalmente, destaca la fuerte asociación entre el estadio clínico (ESTADIO_CAT) y la indicación de radioterapia (RT) (p < 1e-80), lo cual refleja que las decisiones terapéuticas están fuertemente influenciadas por la extensión tumoral.
+
+*Conclusión*:A partir del conjunto de análisis bivariantes realizados (correlaciones entre variables numéricas, comparaciones entre variables numéricas y categóricas, y asociaciones entre pares de variables categóricas), se observa un patrón clínico claro: tumores de mayor agresividad proliferativa tienden a mostrar menor expresión hormonal, peor pronóstico y peor respuesta, mientras que tumores menos diferenciados y con baja carga hormonal responden mejor a la quimioterapialosz, especialmente en perfiles como el triple negativo. 
+
+
+# Analisis Multivariante
+
+Por ahora, hemos explorado la relación entre la respuesta completa patológica (RCP) y otras variables del conjunto de datos utilizando análisis bivariantes, tanto de asociación como de correlación. Si bien este tipo de análisis resulta útil como primer acercamiento para identificar posibles vínculos, presenta limitaciones sustanciales cuando se trata de comprender en profundidad qué factores influyen realmente en la probabilidad de alcanzar una RCP.
+
+Una de las principales debilidades del enfoque bivariante es que analiza cada variable por separado, ignorando el contexto en el que interactúan múltiples factores simultáneamente. Esto puede llevar a conclusiones engañosas. Por ejemplo, podríamos observar una aparente relación entre el uso de antibióticos y la RCP, sin tener en cuenta que dicha relación podría estar mediada o explicada por otra variable relevante, como el tipo de quimioterapia administrada. Sin un ajuste por variables concurrentes, este tipo de interpretaciones corre el riesgo de sobreestimar o subestimar efectos reales.
+
+Además, este enfoque no permite identificar interacciones entre variables. Es posible que el impacto de un factor sobre la RCP no sea uniforme, sino que dependa del nivel de otra variable. Por ejemplo, el efecto del fenotipo tumoral sobre la respuesta podría variar según el estado menopáusico de la paciente. Estas interacciones complejas solo pueden detectarse y cuantificarse adecuadamente mediante un análisis multivariante.
+
+También debemos considerar el problema de la colinealidad: cuando dos o más variables están correlacionadas entre sí, el análisis bivariante no puede discernir cuál es la que ejerce realmente el efecto. Esto puede inducir a atribuir erróneamente la influencia de una variable a otra relacionada. El análisis multivariante permite controlar esta colinealidad y distinguir los efectos independientes de cada predictor.
+
+Por último, los análisis bivariantes ofrecen estimaciones “crudas”, es decir, no ajustadas por el resto de variables. En cambio, los modelos multivariantes proporcionan odds ratios ajustados, que representan con mayor fidelidad la influencia real de cada factor sobre la probabilidad de lograr una RCP, controlando por otras covariables.
+
+Por todas estas razones, avanzar hacia un análisis multivariante no solo es un paso lógico, sino necesario. Este enfoque nos permitirá obtener una visión más completa y precisa del fenómeno clínico que estudiamos, identificando los verdaderos determinantes de la respuesta patológica completa, evaluando interacciones relevantes y estimando con mayor exactitud las probabilidades de éxito terapéutico.
+
+### Regresión lineal
+Una vez analizadas las relaciones entre variables mediante métodos bivariantes y regresión lineal, resulta evidente que necesitamos un enfoque más adecuado para modelar eventos clínicos dicotómicos, como la respuesta completa patológica (RCP). La regresión lineal, aunque útil para variables continuas, no es apropiada cuando el resultado a predecir es binario, ya que puede producir valores de probabilidad fuera del rango válido de 0 a 1. Por ejemplo, si intentamos modelar la probabilidad de RCP en función del índice Ki67 con una regresión lineal, obtendremos un modelo como mod.lin <- lm((RCP=="SI") ~ Ki67, data = datos), cuyo resumen (summary(mod.lin)) muestra un coeficiente positivo y significativo para Ki67. Sin embargo, al realizar predicciones con este modelo (predict(mod.lin, data.frame(Ki67 = c(-50, 0, 15, 50, 120)))), observamos valores negativos o superiores a 1, lo cual es ilógico desde un punto de vista probabilístico.
+```{r}
+modelo <- glm((RCP_1 == "SI") ~ TAMAÑO + GRADO_CAT + ANTIBIOTICO, data = datos, family = binomial)
+summary(modelo)
+
+mod.lin <- lm((RCP_1=="SI") ~ Ki67, data = datos)
+predict(mod.lin, data.frame(Ki67 = c(-50, 0, 15, 50, 120, 250)))
+
+plot(datos$Ki67, datos$RCP_1=="SI")
+abline(mod.lin, col = "red")
+```
+por lo tanto, necesitamos una función que sea siempre positiva, como, por ejemplo, la función exponencial negativa.
+```{r}
+
+tama <- seq(-30,30,2)
+plot(tama, exp(0.0372316+0.1652255*tama))
+```
+
+
+
+Pero también que produzca valores en el rango {0,1}, por lo que dividimos la función exponencial entre “algo” un poquito más grande que la propia exponencial.
+```{r}
+
+plot(tama, exp(0.0372316+0.1652255*tama)/(1+exp(0.0372316+0.1652255*tama)))
+```
+Igualmente probemos un poco de codigo lineal:
+```{r, warning=FALSE}
+library(ggplot2)
+
+# Variables que quieres evaluar como predictoras de TAMAÑO
+vars_numericas <- c("Ki67", "EDAD_DIAGNOSTICO", "No_ANTIBIOTICOS", "RE", "RP")
+
+# Bucle por cada variable
+for (var in vars_numericas) {
+  cat("\n==============================\n")
+  cat("📊 Evaluando:", var, "como predictor de TAMAÑO\n")
+
+  # Verificar si la variable es numérica
+  if (is.numeric(datos[[var]])) {
+    # Modelo lineal
+    formula_str <- as.formula(paste("TAMAÑO ~", var))
+    mod_lin <- lm(formula_str, data = datos)
+    resumen <- summary(mod_lin)
+
+    # Extraer valores clave
+    coeficiente <- resumen$coefficients[2, 1]
+    p_valor <- resumen$coefficients[2, 4]
+    r2 <- resumen$r.squared
+
+    # Interpretación
+    direccion <- ifelse(coeficiente > 0, "positiva", "negativa")
+    significancia <- ifelse(p_valor < 0.05, "✅ Significativa", "❌ No significativa")
+
+    cat("🔹 Coeficiente:", round(coeficiente, 4), "→ Relación", direccion, "\n")
+    cat("🔹 p-valor:", round(p_valor, 5), "→", significancia, "\n")
+    cat("🔹 R²:", round(r2, 3), "→", ifelse(r2 > 0.3, "✔ Explica bastante", "❗ Explica poco"), "\n")
+
+    # Gráfico solo si ambas son numéricas
+    plot(datos[[var]], datos$TAMAÑO,
+         main = paste("Relación entre", var, "y TAMAÑO"),
+         xlab = var, ylab = "TAMAÑO",
+         col = "darkblue", pch = 19)
+    abline(mod_lin, col = "red", lwd = 2)
+
+    # Predicción con valores teóricos
+    nuevos_valores <- data.frame()
+    if (var == "Ki67") {
+      nuevos_valores <- data.frame(Ki67 = c(-50, 0, 15, 50, 120, 200))
+    } else {
+      nuevos_valores <- data.frame(x = seq(min(datos[[var]], na.rm = TRUE),
+                                           max(datos[[var]], na.rm = TRUE),
+                                           length.out = 5))
+      names(nuevos_valores) <- var
+    }
+
+    predicciones <- predict(mod_lin, newdata = nuevos_valores)
+    cat("🔮 Predicciones para valores de", var, ":\n")
+    print(data.frame(nuevos_valores, Prediccion_Tamaño = round(predicciones, 2)))
+  } else {
+    cat("La variable", var, "no es numérica. No se puede ajustar modelo lineal ni graficar.\n")
+  }
+}
+
+```
+
+Se realizaron regresiones lineales simples del tipo TAMAÑO ~ X. En cada caso, se interpretó el signo del coeficiente (para identificar si la relación era positiva o negativa), el p-valor (para valorar significancia estadística) y el R² (para cuantificar cuánta variabilidad del tamaño explica la variable predictora).
+
+Los resultados muestran que:
+
+EDAD_DIAGNOSTICO tiene una relación positiva débil con TAMAÑO (coef. = 0.0027), pero no significativa (p = 0.676), y un R² ≈ 0, por lo que no se considera un buen predictor.
+
+No_ANTIBIOTICOS presenta una relación negativa leve con TAMAÑO (coef. = -0.0818), pero tampoco significativa (p = 0.336), y su R² es muy bajo (0.001), lo que indica nula capacidad explicativa.
+
+RE y RP, marcadores hormonales, muestran coeficientes positivos mínimos, sin significancia estadística (p > 0.7) ni capacidad predictiva (R² ≈ 0). Por tanto, se descartan como predictores de TAMAÑO en este contexto.
+
+## Regresión logística
+
+Este problema se soluciona utilizando regresión logística, una técnica específicamente diseñada para variables dependientes binarias. Esta metodología transforma la combinación lineal de los predictores en probabilidades válidas usando una función logística (o sigmoidea), que restringe los valores entre 0 y 1. En lugar de modelar directamente la media de la variable dependiente, la regresión logística estima la probabilidad de ocurrencia del evento en función de las variables explicativas. Por tanto, en nuestro contexto, el modelo estima la probabilidad de que un paciente logre una RCP en función de factores clínicos como el tamaño del tumor, el grado histológico y el uso de antibióticos.
+
+Los coeficientes del modelo indican la dirección y magnitud de esta relación: un valor positivo implica que a medida que aumenta la variable predictora, también lo hace la probabilidad de RCP, mientras que un coeficiente negativo indica lo contrario. Estos efectos se interpretan más fácilmente a través del odds ratio (OR), que cuantifica cuánto se multiplican las probabilidades de respuesta por cada unidad de cambio en la variable independiente. Por ejemplo, un OR menor a 1 indica una disminución en la probabilidad del evento, y uno mayor a 1, un aumento. La significancia estadística de cada predictor se evalúa con el p-valor: si es menor a 0.05, el efecto se considera significativo. Además, la devianza residual y el AIC se utilizan para evaluar la calidad del modelo: cuanto más bajos, mejor ajuste. 
+
+Ahora, ajustamos un modelo con el siguiente código:
+
+```{r}
+modelo <- glm((RCP_1 == "SI") ~ TAMAÑO + GRADO_CAT + ANTIBIOTICO, data = datos, family = binomial)
+summary(modelo)
+```
+
+El intercepto del modelo tiene un valor negativo significativo (−0.72107, p ≈ 0.00075), lo que indica que, en condiciones de referencia (tumores de grado 1/2 y sin antibióticos, con tamaño igual a 0), la probabilidad base de lograr una RCP es baja.
+
+En cuanto al tamaño del tumor, su coeficiente (−0.09892, p ≈ 0.0287) es negativo y significativo, lo que sugiere que a mayor tamaño tumoral, menor probabilidad de alcanzar una RCP. Al convertirlo a OR → exp(−0.09892) ≈ 0.906, se concluye que por cada cm adicional en el tamaño del tumor, los odds de RCP disminuyen aproximadamente un 9.4%, lo cual es clínicamente coherente.
+
+En la salida del modelo de regresión logística, el término `GRADO_CAT3` aparece porque R convierte automáticamente las variables categóricas en variables indicadoras (también llamadas dummies) al construir el modelo. En este caso, la variable `GRADO_CAT` tiene dos niveles: `"1/2"` y `"3"`. R toma por defecto el primer nivel como referencia (en este caso `"1/2"`) y crea una nueva variable binaria (`GRADO_CAT3`) que vale 1 cuando el tumor es de grado 3 y 0 cuando es de grado 1 o 2. Por tanto, el coeficiente estimado para `GRADO_CAT3` refleja el cambio en los log-odds de alcanzar una respuesta completa patológica (RCP) cuando el tumor es de grado 3 en comparación con el grupo de referencia (grado 1/2). Esta codificación es estándar en regresión logística y permite interpretar fácilmente los efectos de cada categoría respecto a la base.
+
+Para el grado histológico, se observa que los tumores de grado 3 tienen un coeficiente positivo y altamente significativo (0.73212, p < 0.0001), con un OR ≈ exp(0.73212) ≈ 2.08. Esto significa que los pacientes con tumores de grado 3 tienen más del doble de odds de lograr una RCP en comparación con aquellos de grado 1 o 2. Este hallazgo sugiere que, aunque los tumores de alto grado son más agresivos, también podrían ser más sensibles a la quimioterapia.
+
+Por su parte, el uso de antibióticos (categoría "SI") muestra un coeficiente negativo (−0.26980), lo cual indicaría una disminución en la probabilidad de RCP; sin embargo, esta asociación no es estadísticamente significativa (p ≈ 0.116), por lo que no se puede concluir con seguridad que el uso de antibióticos influya directamente en la respuesta completa.
+
+El modelo presenta una reducción moderada en la devianza (de 870.73 a 846.16), lo que sugiere que los predictores aportan cierta capacidad explicativa respecto a la variable dependiente. El AIC (854.16) puede utilizarse como referencia para comparar este modelo con otros más complejos o simplificados.
+
+En resumen, este modelo confirma que tanto el tamaño tumoral como el grado histológico son predictores estadísticamente significativos de la respuesta completa patológica, mientras que el uso de antibióticos, aunque presenta una tendencia negativa, no alcanza significancia estadística. Estos hallazgos refuerzan la importancia de estos factores en la estratificación clínica y el diseño de estrategias terapéuticas personalizadas.
+
+Este análisis pone en evidencia una de las grandes ventajas del enfoque multivariante: permite evaluar el efecto de cada variable ajustando por el resto, corrigiendo así posibles sesgos de confusión. Además, nos permite detectar relaciones que no serían visibles en análisis por separado. 
+Esta información es clave para seleccionar variables en un modelo multivariante más robusto y evitar introducir ruido al incluir variables no significativas o redundantes.
+
+
+### Selección de Variables con Regresión Stepwise en R
+
+Tras el análisis bivariante exhaustivo presentado en secciones anteriores identificamos un conjunto de variables clínicamente relevantes y estadísticamente significativas en relación con la respuesta completa patológica (RCP_1). Las variables con mayor consistencia estadística y sustento clínico fueron: TAMAÑO, GRADO_CAT, Ki67_CAT, HT_ADY_OK, ANTIBIOTICO, FENOTIPO_IHQ, RT, Tn, Nx.
+
+Para la construcción del modelo, utilizamos el procedimiento de selección de variables stepwise (por pasos), una técnica iterativa que permite construir un modelo parsimonioso y estadísticamente óptimo. Esta metodología evalúa sistemáticamente el impacto de añadir o eliminar cada variable candidata con base en un criterio de información: en este caso, el Akaike Information Criterion (AIC). Cuanto menor es el AIC, mejor es el balance entre calidad del ajuste y complejidad del modelo.Existen tres variantes:
+
+-*Forward selection*: parte de un modelo vacío e incorpora variables una a una si mejoran el ajuste.
+
+-*Backward elimination*: parte del modelo completo y elimina variables si su exclusión mejora el AIC.
+
+-*Stepwise (bidireccional)*: combina los dos métodos anteriores, añadiendo o eliminando variables según el ajuste.
+```{r, warning=FALSE}
+library(MASS)
+
+# Codificación binaria de la variable dependiente
+datos$RCP_bin <- ifelse(datos$RCP_1 == "SI", 1, 0)
+
+# Modelo nulo (sin predictores)
+modelo_null <- glm(RCP_bin ~ 1, data = datos, family = binomial)
+
+# Modelo completo con variables seleccionadas del análisis bivariante
+modelo_full <- glm(RCP_bin ~ TAMAÑO + GRADO_CAT + ANTIBIOTICO + FENOTIPO_IHQ + T + RT ,
+                   data = datos, family = binomial)
+
+
+
+# Aplicación de los tres métodos de selección
+modelo_forward <- stepAIC(modelo_null, 
+                          scope = list(lower = modelo_null, upper = modelo_full), 
+                          direction = "forward")
+
+modelo_backward <- stepAIC(modelo_full, direction = "backward")
+
+modelo_both <- stepAIC(modelo_null, 
+                       scope = list(lower = modelo_null, upper = modelo_full), 
+                       direction = "both")
+
+
+```
+Este modelo mostró un AIC final de 794.56, una mejora sustancial frente al AIC del modelo nulo (872.73). A lo largo del proceso iterativo, se evaluó la contribución individual de cada variable. En cada paso, se mantuvieron únicamente aquellas cuyo aporte reducía el AIC, es decir, aquellas que aumentaban la capacidad explicativa del modelo sin incrementar innecesariamente su complejidad.
+
+En particular, FENOTIPO_IHQ fue la primera variable seleccionada, mostrando un efecto muy fuerte en la reducción del AIC (de 872.73 a 804.07), seguida por GRADO_CAT, TAMAÑO y, finalmente, ANTIBIOTICO. Por el contrario, variables como RT o T no lograron una reducción suficiente del AIC y fueron descartadas del modelo final, indicando un efecto marginal o dependiente de otras variables ya incluidas.
+```{r}
+# Comparación de modelos por AIC
+AIC(modelo_forward, modelo_backward, modelo_both)
+
+
+```
+De forma consistente, los tres métodos convergieron hacia el mismo modelo óptimo, compuesto por las variables TAMAÑO, GRADO_CAT, ANTIBIOTICO y FENOTIPO_IHQ, con un AIC final de 794.56. Esta coincidencia entre algoritmos confirma que el modelo seleccionado es estadísticamente robusto, y que la inclusión o exclusión de otras variables no mejora significativamente la capacidad predictiva ni reduce la pérdida de información. Este modelo será, por tanto, la base para la interpretación clínica y la estimación de efectos ajustados mediante odds ratios.
+```{r}
+# Mostrar resultados de cada modelo
+cat("\n=== MODELO FORWARD SELECTION ===\n")
+summary(modelo_forward)
+
+cat("\n=== MODELO BACKWARD ELIMINATION ===\n")
+summary(modelo_backward)
+
+cat("\n=== MODELO STEPWISE BOTH DIRECTIONS ===\n")
+summary(modelo_both)
+```
+
+FENOTIPO_IHQ: En comparación con el fenotipo de referencia (Her2+), tanto los subtipos Luminal como Triple Negativo presentaron coeficientes negativos significativos (p < 0.001), lo que indica una menor probabilidad de RCP en comparación con el grupo de referencia. Esto es coherente con la biología de los tumores luminales, que suelen tener una menor tasa de respuesta patológica completa.
+
+GRADO_CAT3: Los tumores de grado 3 mostraron una mayor probabilidad de RCP (OR > 1, p = 0.0046), lo que refuerza su perfil proliferativo y su sensibilidad al tratamiento neoadyuvante, especialmente en subtipos más agresivos.
+
+TAMAÑO: Cada aumento de 1 cm en el tamaño tumoral se asoció con una disminución significativa en la probabilidad de alcanzar RCP (p = 0.0148). 
+
+ANTIBIOTICO: Aunque esta variable mostró una tendencia negativa hacia la RCP, su valor p fue de 0.089, ligeramente por encima del umbral convencional de significancia. Si bien no es concluyente, su inclusión en el modelo puede aportar valor en análisis más complejos o ajustados.
+
+Intercepto: El valor positivo del intercepto indica que, en ausencia de los factores de riesgo descritos, la probabilidad base de RCP en el grupo de referencia es relativamente moderada.
+
+AIC: 794.56, significativamente menor que el AIC inicial del modelo nulo (872.73), indicando una mejora sustancial en la calidad del ajuste sin sobreajuste.
+
+Residual deviance: 782.56, lo que sugiere un ajuste razonable para la complejidad del modelo.
+
+Número de observaciones: 699, sin indicios de problemas graves de sobreajuste o colinealidad, dado que el número de predictores es limitado
+
+```{r}
+modelo_step <- modelo_backward
+
+# Paso 1: Odds Ratios e intervalos de confianza
+exp(cbind(OddsRatio = coef(modelo_step), confint(modelo_step)))
+
+# Paso 2: Visualizar OR con ggplot2
+OR <- exp(coef(modelo_step))
+CI <- exp(confint(modelo_step))
+or_df <- data.frame(
+  Variable = names(OR),
+  OR = OR,
+  CI_lower = CI[, 1],
+  CI_upper = CI[, 2]
+)
+
+library(ggplot2)
+ggplot(or_df[-1, ], aes(x = Variable, y = OR)) +  # Excluimos el intercepto
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.2) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red") +
+  ylab("Odds Ratio (OR)") + xlab("") +
+  ggtitle("Odds Ratios con intervalos de confianza (95%)") +
+  theme_minimal()
+
+# Paso 3: Evaluar el desempeño del modelo con curva ROC
+library(pROC)
+roc_obj <- roc(datos$RCP_1, fitted(modelo_step))
+plot(roc_obj, col = "darkgreen", lwd = 2, main = "Curva ROC del modelo final")
+auc(roc_obj)  # Área bajo la curva (AUC)
+
+```
+Aqui podemos ver la curva ROC, obteniendo un AUC elevado. Esta área bajo la curva refleja una buena discriminación del modelo para predecir la probabilidad de respuesta completa patológica (RCP).
+
+Por otro lado, el gráfico de odds ratios con intervalos de confianza al 95% nos da confianza sobre nuestros resultados. 
+
+Antes de darnos por satisfechos, haria falta tambien analizarlosin catergorizar las variables numéricas, para ver si el modelo funciona mejor. 
+
+
+
+```{r}
+# Cargar librerías necesarias
+library(MASS)
+
+
+
+# Ajustar el modelo logístico con variables numéricas sin categorizar
+modelo_numerico <- glm(RCP_bin ~ TAMAÑO + Ki67 + EDAD_DIAGNOSTICO + GRADO + RE + RP, 
+                       data = datos, 
+                       family = binomial)
+
+# Ver resumen del modelo
+summary(modelo_numerico)
+
+# Aplicar selección automática de variables (backward)
+modelo_numerico_back <- stepAIC(modelo_numerico, direction = "backward")
+
+# Mostrar resumen del modelo final
+summary(modelo_numerico_back)
+
+```
+Esta comparación responde a una necesidad metodológica clave: determinar si la transformación de variables (como el tamaño tumoral, los receptores hormonales o el índice Ki67) en categorías clínicas aporta claridad interpretativa sin comprometer el ajuste del modelo, o si, por el contrario, implica una pérdida de información que afecta su rendimiento predictivo. Los resultados muestran que el modelo con variables continuas presenta un AIC menor (781.99) frente al modelo con variables categorizadas (AIC = 794.56), lo que indica una mejor capacidad de ajuste y menor pérdida de información. Esto se debe a que las variables continuas permiten capturar variaciones más sutiles en los datos, especialmente en contextos donde la relación con la RCP puede ser más compleja que una simple dicotomía. 
+
+
+# Análisis de Supervivencia
+
+En estudios clínicos oncológicos, no solo resulta relevante saber si un evento ocurre, sino cuándo ocurre. El análisis de supervivencia responde precisamente a esta necesidad, permitiendo modelar el tiempo hasta la aparición de un evento de interés, teniendo en cuenta tanto los pacientes que experimentan dicho evento como aquellos que, por diversas razones, no lo hacen durante el seguimiento (pacientes censurados).
+
+Este enfoque aporta una ventaja fundamental respecto a modelos tradicionales como la regresión logística, ya que incorpora la dimensión temporal y es capaz de manejar información incompleta de forma adecuada. En el caso clínico que nos ocupa, el evento considerado es el fallecimiento, y el objetivo es estimar la probabilidad de supervivencia global (SG) a lo largo del tiempo.
+
+## Concepto de función de supervivencia
+
+La función de supervivencia, denotada por \\( S(t) \\), representa la probabilidad de que un individuo sobreviva más allá del tiempo \\( t \\). Se define como:
+
+\[
+S(t) = P(T > t)
+\]
+
+donde \\( T \\) es una variable aleatoria que representa el tiempo hasta el evento. Esta función decrece con el tiempo y su estimación práctica se realiza mediante el método no paramétrico de **Kaplan-Meier**, que proporciona una curva escalonada reflejando la probabilidad acumulada de supervivencia.
+
+
+En nuestro estudio, se define como evento de interés el fallecimiento por cáncer de mama. Esta información se encuentra codificada en la variable ESTADO_ULTIMO_CONTROL, que recoge el estado vital de cada paciente al momento del último seguimiento. Se considera que ha ocurrido un evento (evento = 1) cuando ESTADO_ULTIMO_CONTROL == "MCE" (muerte por causa de la enfermedad). En todos los demás casos, el paciente se considera censurado (evento = 0), incluyendo aquellas que permanecen vivas (VSE), aquellas fallecidas por otras causas o las que abandonaron el seguimiento antes de observarse un evento.
+
+Además del estado vital, el análisis de supervivencia requiere conocer el tiempo exacto de seguimiento de cada paciente, que se calcula como la diferencia entre la fecha de diagnóstico (FECHA_DIAGNOSTICO) y la fecha del último control clínico (FECHA_ULTIMO_CONTROL), ambas expresadas en años para mayor claridad en la interpretación.
+
+A continuación, se presenta el código empleado para construir el objeto de análisis y visualizar la curva de supervivencia global para toda la cohorte:
+
+
+
+```{r, warning=FALSE, message=FALSE}
+#  Limpiar saltos de línea, retorno de carro y espacios
+names(datos) <- gsub("[\\r\\n]", "", names(datos))
+names(datos) <- trimws(names(datos))
+
+#  Renombrar la columna de estado si es necesario
+names(datos)[names(datos) == "ESTADO_ULTIMO_CONTROL"] <- "ESTADO_ULTIMO_
+CONTROL"
+
+# Cargar librerías necesarias
+library(survival)
+library(survminer)
+library(lubridate)
+library(dplyr)
+
+# Limpiar nombres de columnas de caracteres especiales
+names(datos) <- gsub("[\r\n]", "", names(datos))
+names(datos) <- trimws(names(datos))
+
+# Renombrar columna que contiene "ESTADO_ULTIMO"
+col_estado <- grep("ESTADO_ULTIMO", names(datos), value = TRUE)
+names(datos)[names(datos) == col_estado] <- "ESTADO_ULTIMO_CONTROL"
+
+# Convertir fechas al formato correcto
+datos$FECHA_DIAGNOSTICO <- dmy(datos$FECHA_DIAGNOSTICO)
+datos$FECHA_ULTIMO_CONTROL <- dmy(datos$FECHA_ULTIMO_CONTROL)
+
+# Calcular tiempo de seguimiento en años
+datos$tiempo_SG <- as.numeric(difftime(datos$FECHA_ULTIMO_CONTROL,
+                                       datos$FECHA_DIAGNOSTICO,
+                                       units = "days")) / 365.25
+
+# Crear variable de evento (1 si falleció, 0 si censurado)
+datos$evento_SG <- ifelse(datos$ESTADO_ULTIMO_CONTROL == "MCE", 1, 0)
+
+# Crear objeto de supervivencia
+surv_object <- Surv(time = datos$tiempo_SG, event = datos$evento_SG)
+
+# Ajustar modelo Kaplan-Meier
+km_fit <- survfit(surv_object ~ 1)
+
+# Graficar curva de supervivencia
+ggsurvplot(km_fit,
+           data = datos,
+           risk.table = TRUE,
+           xlab = "Tiempo desde diagnóstico (años)",
+           ylab = "Probabilidad de supervivencia",
+           title = "Curva de supervivencia global (Kaplan-Meier)",
+           conf.int = TRUE)
+
+
+```
+
+En el eje horizontal se representa el tiempo transcurrido desde el diagnóstico (en años), mientras que el eje vertical muestra la probabilidad acumulada de supervivencia. Las marcas verticales indican casos censurados, es decir, pacientes que no han experimentado el evento (muerte) al finalizar el seguimiento.
+
+La curva muestra una disminución progresiva de la probabilidad de supervivencia a medida que transcurre el tiempo, con una mayor pendiente en los primeros años tras el diagnóstico, lo que sugiere una mayor tasa de eventos en esa etapa. Además, se incluye una banda gris que representa el intervalo de confianza al 95%, reflejando la incertidumbre de la estimación.
+
+En la parte inferior del gráfico se muestra la tabla de riesgo, que indica el número de pacientes aún en seguimiento (no censurados ni fallecidos) en distintos momentos del tiempo.¿Qué nos dice esta tabla?
+
+Inicio (0 años): todos los pacientes están en seguimiento → 699
+
+A 2.5 años: ya han ocurrido eventos o censura en más de la mitad → quedan 299
+
+A 5 años: solo 172 siguen en riesgo
+
+A 10 años: solo 29 personas quedan bajo observación
+
+A 15 años: 0 personas → el seguimiento se ha completado o censurado para todos
+
+
+```{r}
+# Probabilidad de supervivencia a 2, 5 y 10 años
+prob_2 <- summary(km_fit, times = 2)$surv
+prob_5 <- summary(km_fit, times = 5)$surv
+prob_10 <- summary(km_fit, times = 10)$surv
+
+# Mediana de supervivencia
+mediana_supervivencia <- summary(km_fit)$table["median"]
+
+# Mostrar resultados clave
+cat("📌 Mediana de supervivencia:", round(mediana_supervivencia, 2), "años\n")
+cat("📈 Probabilidad de estar viva a 2 años:", round(prob_2, 3), "\n")
+cat("📈 Probabilidad de estar viva a 5 años:", round(prob_5, 3), "\n")
+cat("📈 Probabilidad de estar viva a 10 años:", round(prob_10, 3), "\n")
+```
+
+
+```{r warning=FALSE }
+# 📂 Comparación entre grupos clínicos (ej. FENOTIPO_IHQ)
+km_grupos <- survfit(surv_object ~ FENOTIPO_IHQ, data = datos)
+
+# Gráfico por grupos
+ggsurvplot(km_grupos,
+           data = datos,
+           risk.table = TRUE,
+           pval = TRUE,
+           conf.int = TRUE,
+           xlab = "Tiempo desde diagnóstico (años)",
+           ylab = "Probabilidad de supervivencia",
+           title = "Supervivencia por fenotipo IHQ")
+
+# ⚖️ Test de log-rank para diferencias entre grupos
+test_logrank <- survdiff(surv_object ~ FENOTIPO_IHQ, data = datos)
+print(test_logrank)
+
+# 📂 Comparación entre grupos clínicos 
+km_grupos <- survfit(surv_object ~ GRADO_CAT , data = datos)
+
+# Gráfico por grupos
+ggsurvplot(km_grupos,
+           data = datos,
+           risk.table = TRUE,
+           pval = TRUE,
+           conf.int = TRUE,
+           xlab = "Tiempo desde diagnóstico (años)",
+           ylab = "Probabilidad de supervivencia",
+           title = "Supervivencia por GRADO_CAT")
+
+# ⚖️ Test de log-rank para diferencias entre grupos
+test_logrank <- survdiff(surv_object ~ GRADO_CAT, data = datos)
+print(test_logrank)
+
+
+# 📂 Comparación entre grupos clínicos 
+km_grupos <- survfit(surv_object ~ TIPO_CIRUGIA , data = datos)
+
+# Gráfico por grupos
+ggsurvplot(km_grupos,
+           data = datos,
+           risk.table = TRUE,
+           pval = TRUE,
+           conf.int = TRUE,
+           xlab = "Tiempo desde diagnóstico (años)",
+           ylab = "Probabilidad de supervivencia",
+           title = "Supervivencia por TIPO_CIRUGIA")
+
+# ⚖️ Test de log-rank para diferencias entre grupos
+test_logrank <- survdiff(surv_object ~ TIPO_CIRUGIA, data = datos)
+print(test_logrank)
+
+
+
+# 📂 Comparación entre grupos clínicos 
+km_grupos <- survfit(surv_object ~ RCP_1 , data = datos)
+
+# Gráfico por grupos
+ggsurvplot(km_grupos,
+           data = datos,
+           risk.table = TRUE,
+           pval = TRUE,
+           conf.int = TRUE,
+           xlab = "Tiempo desde diagnóstico (años)",
+           ylab = "Probabilidad de supervivencia",
+           title = "Supervivencia por RCP_1")
+
+# ⚖️ Test de log-rank para diferencias entre grupos
+test_logrank <- survdiff(surv_object ~ RCP_1, data = datos)
+print(test_logrank)
+
+
+```
+Finalmente, los pacientes que lograron respuesta completa patológica (RCP_1 = "SI") presentan una supervivencia notablemente mayor en comparación con aquellos que no la alcanzaron. También se observa que los pacientes sometidos a cirugía conservadora tienen una mayor probabilidad de supervivencia que aquellos que recibieron cirugía radical, lo que puede reflejar un mejor estadio inicial o una mejor respuesta al tratamiento neoadyuvante. Asimismo, los tumores de menor grado histológico (GRADO_CAT = 1/2) están asociados a una mejor supervivencia que los de alto grado (GRADO_CAT = 3). Por último, el análisis por fenotipo IHQ revela que el subtipo Luminal presenta el mejor pronóstico, seguido de Her2, mientras que el triple negativo muestra la supervivencia más baja. Todas estas diferencias fueron estadísticamente significativas (p < 0.05), lo que resalta la importancia de estas variables como factores pronóstico clave en el manejo del cáncer de mama.
+

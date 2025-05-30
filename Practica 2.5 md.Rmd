@@ -1,0 +1,1723 @@
+---
+title: "Practica 2.5 md"
+author: "Diego Gijón Fernández, Ingeniería Bionformática - UMA"
+date: "`r format(Sys.Date(), '%d de %B de %Y')`"
+lang: es
+output: 
+  html_document:
+    toc: true
+    toc_depth: 4
+    self_contained: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    df_print: paged
+    number_sections: true
+    fig_caption: true
+    includes:
+      in_header: estilos_personalizados.html
+  
+
+---
+## Metodología
+
+La actividad #2 tiene como objetivo principal el diseño de modelos predictivos de RCP basados en diferentes algoritmos de aprendizaje computacional comúnmente utilizados en la literatura. En líneas generales, los objetivos específicos serían:
+
+
+
+2. Comparar los resultados con los algoritmos de aprendizaje computacional de la guía docente. En este caso: 
+-Se aplicarán algoritmos de selección de variables del tipo filtrado y wrapper.
+Aclaración: Los algoritmos wrapper son independientes del algoritmo de aprendizaje utilizado, es decir, se deberán implementar un algoritmo wrapper (búsqueda exhaustiva, feedforward selection, o cualquier otro que use al AUC para la selección del mejor modelo), PERO se compararán al menos tres algoritmos de aprendizaje (RRNN, SVM y DT) de la lista de la guía docente, respecto al "gold-standard" en clínica (regresión logística).
+-Se implementará el método de doble validación cruzada (5x2CV - el que vimos en clase) como esquema de validación honesta de los hiperparámetros de los modelos y de las variables relevantes.
+
+3. Depliegue en producción mediante la implementación de una aplicación RShiny que integrará el modelo más eficiente de entre todos los analizados.
+
+<!-- Logo fuera del chunk R -->
+<img src="logo_universidad.png" alt="Logo Universidad" style="height: 120px;">
+  
+PRIMERAMENTE MENCIONAR QUE HE USADO CHAGTP PARA LA MEJORA DE ESCRITURA Y CÓDIGO DE ESTE TRABAJO
+
+
+# Introducción
+El objetivo principal de este trabajo es identificar el mejor modelo multivariante capaz de predecir de forma eficaz la respuesta patológica completa (RCP) en pacientes con cáncer de mama, a partir de distintas variables clínicas. Aunque algunas variables puedan mostrar asociación individual con la RCP, no necesariamente implican una contribución significativa cuando se consideran conjuntamente en un modelo. Por ello, se utilizará un enfoque de regresión paso a paso (stepwise regression), que permite seleccionar de forma automática el conjunto óptimo de variables, optimizando criterios como el AIC para alcanzar un modelo que explique mejor los datos, evitando el uso de fuerza bruta.
+
+En el contexto clínico actual, el tratamiento del cáncer de mama ha evolucionado hacia una estrategia cada vez más personalizada, teniendo en cuenta las características tanto del tumor como del paciente. Entre los factores emergentes con posible influencia en la respuesta terapéutica destaca la microbiota intestinal, cuya alteración —por ejemplo, mediante el uso de antibióticos— puede afectar la función del sistema inmune y, en consecuencia, la eficacia de los tratamientos oncológicos.
+
+El tratamiento neoadyuvante, consistente en administrar quimioterapia antes de la cirugía, permite evaluar directamente la respuesta del tumor. El objetivo clínico más favorable es alcanzar una respuesta patológica completa, que se asocia con mejores tasas de supervivencia a largo plazo. No obstante, el uso de antibióticos durante este proceso podría modificar la microbiota intestinal, generando un estado de disbiosis que compromete la inmunomodulación y potencialmente reduce la efectividad terapéutica.
+
+Aunque este fenómeno ya ha sido descrito en cánceres como el de pulmón, riñón o melanoma, su impacto específico en cáncer de mama sigue sin estar bien definido. Por ello, el presente estudio se plantea como una oportunidad para analizar en profundidad si el uso de antibióticos durante o antes del tratamiento neoadyuvante influye negativamente en los resultados clínicos en pacientes con cáncer de mama.
+
+# Hipótesis y Objetivos
+La hipótesis central plantea que el uso de antibióticos en pacientes con cáncer de mama, durante o en las semanas previas al inicio del tratamiento neoadyuvante, podría comprometer la efectividad del mismo. Esto se debe a la posible alteración de la microbiota intestinal, que juega un papel clave en la modulación inmune, el microambiente tumoral y la metabolización de fármacos.
+
+El objetivo del estudio es evaluar si las pacientes que reciben antibióticos presentan:
+
+-Menores tasas de respuesta completa patológica (medida a través de la escala RCB).
+
+-Peores resultados de supervivencia global.
+
+-Mayor probabilidad de recaída posterior al tratamiento.
+
+Para ello, se aplicarán técnicas estadísticas descriptivas, pruebas de asociación y modelos multivariantes que permitan identificar los factores más influyentes.
+
+#Informacion necesaria 
+
+Aquí la definición de todas las métricas que usaremos para este estudio:
+
+
+### MATRIZ DE CONFUSIÓN
+
+Antes de entrar a las métricas, recordemos la estructura de la matriz de confusión:
+
+|                   | **Predicción Positiva** | **Predicción Negativa** |
+| ----------------- | ----------------------- | ----------------------- |
+| **Real Positiva** | TP (Verdadero Positivo) | FN (Falso Negativo)     |
+| **Real Negativa** | FP (Falso Positivo)     | TN (Verdadero Negativo) |
+
+---
+
+###  MÉTRICAS DERIVADAS
+
+#### 1. Accuracy (Exactitud, ACC)
+
+**¿Qué mide?**
+Proporción de predicciones correctas sobre el total de casos.
+
+**Fórmula:**
+
+```math
+Accuracy = (TP + TN) / (TP + TN + FP + FN)
+```
+
+**Útil cuando:**
+Las clases están balanceadas y todos los errores tienen el mismo costo.
+
+**Riesgo:**
+Engañosa si hay desbalance. Predecir siempre "negativo" en una enfermedad rara puede darte alta accuracy y un modelo inútil.
+
+---
+
+#### 2. Precision (Valor Predictivo Positivo)
+
+**¿Qué mide?**
+Proporción de verdaderos positivos entre todas las predicciones positivas.
+
+**Fórmula:**
+
+```math
+Precision = TP / (TP + FP)
+```
+
+**Útil cuando:**
+El costo de un falso positivo es alto, como cuando un tratamiento es riesgoso o invasivo.
+
+
+---
+
+#### 3. Recall (Sensibilidad / Tasa de verdaderos positivos)
+
+**¿Qué mide?**
+Proporción de verdaderos positivos detectados entre todos los casos reales positivos.
+
+**Fórmula:**
+
+```math
+Recall = TP / (TP + FN)
+```
+
+**Útil cuando:**
+El costo de no detectar un positivo es alto, como en el diagnóstico de enfermedades graves.
+
+---
+
+#### 4. Specificity (Especificidad / Tasa de verdaderos negativos)
+
+**¿Qué mide?**
+Proporción de verdaderos negativos identificados correctamente.
+
+**Fórmula:**
+
+```math
+Specificity = TN / (TN + FP)
+```
+
+**Útil cuando:**
+Quieres minimizar falsos positivos, como evitar pruebas invasivas innecesarias.
+
+---
+
+#### 5. F1-Score
+
+**¿Qué mide?**
+Media armónica entre **precisión** y **recall**.
+
+**Fórmula:**
+
+```math
+F1 = 2 * (Precision * Recall) / (Precision + Recall)
+```
+
+**Útil cuando:**
+Hay desbalance de clases y necesitas equilibrar precisión y sensibilidad.
+
+
+---
+
+#### 6. AIC – Akaike Information Criterion
+
+Definición:
+El AIC es un criterio estadístico que evalúa la calidad de un modelo considerando dos factores:
+
+Ajuste del modelo (qué tan bien se ajusta a los datos)
+
+Complejidad del modelo (número de parámetros)
+
+```math
+AIC=−2⋅log(L)+2k
+```
+
+L = verosimilitud del modelo
+
+
+k = número de parámetros estimados (incluye el intercepto)
+
+Interpretación:
+
+Menor AIC → mejor modelo (mejor balance entre ajuste y simplicidad)
+
+Penaliza los modelos con muchos parámetros para evitar sobreajuste
+
+
+#### 7. ROC Curve (Receiver Operating Characteristic)
+
+ Muestra la relación entre:
+
+  Sensibilidad (TPR): eje Y
+  1 - Especificidad (FPR): eje X
+
+Cada punto de la curva corresponde a un umbral de clasificación distinto.
+
+---
+
+#### 8. AUC (Área bajo la curva ROC)
+
+**¿Qué mide?**
+Probabilidad de que el modelo asigne una probabilidad mayor a un caso positivo que a uno negativo.
+
+* **AUC = 1.0** → Clasificación perfecta.
+* **AUC = 0.5** → No mejor que lanzar una moneda.
+* **AUC < 0.5** → Peor que azar (raro, pero posible).
+
+## Fuentes de Datos (Población de Estudio)
+Los datos utilizados en este estudio provienen de la Unidad de Gestión Clínica de Oncología Médica del Hospital Regional de Málaga, los cuales están almacenados en el sistema de información clínica Galén. Esta base de datos oncológica contiene una gran cantidad de información estructurada y no estructurada relacionada con los pacientes oncológicos atendidos en la unidad, incluyendo aspectos clínicos, tratamientos recibidos, resultados quirúrgicos, participación en ensayos clínicos, datos genéticos y seguimiento.
+
+La población de estudio está compuesta por pacientes diagnosticadas de cáncer de mama entre los años 2009 y 2023, que fueron tratadas con quimioterapia neoadyuvante y posteriormente sometidas a cirugía.
+
+```{r}
+#| echo: false
+#| warning: false
+library(glmnet)
+library(readxl)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(broom)
+library(DT)
+library(tidyverse)
+library(reshape2)
+library(MASS)
+library(pROC)
+library(readxl)
+library(dplyr)
+library(kableExtra)
+library(tidyr)
+
+setwd("C:/Users/diego/Downloads")
+
+# Cargar los datos y modelo desde la Práctica 1
+load("datos_practica1.RData")
+load("modelo_practica1.RData")
+
+
+datos %>%
+  head(10) %>%
+  kable("html", caption = "Vista preliminar de las primeras observaciones del conjunto de datos clínicos") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"),
+                full_width = TRUE,
+                position = "center") %>%
+  scroll_box(width = "100%", height = "400px")
+
+```
+
+##PARTE 1: Regresión logística
+
+La regresión logística es una técnica fundamental en la minería de datos para resolver problemas de clasificación binaria, especialmente útil en ingeniería de la salud cuando el objetivo es predecir la probabilidad de que ocurra un evento (por ejemplo, respuesta al tratamiento, presencia de una enfermedad, etc.).
+
+En el enfoque clínico tradicional, de carácter explicativo, el análisis se centra en los coeficientes del modelo, como los valores p y las odds ratios, con el objetivo de comprender las relaciones causales o asociaciones entre variables. La evaluación del modelo se realiza mediante métricas como los coeficientes, el R² de McFadden y los intervalos de confianza de las odds ratios. Por el contrario, el enfoque del aprendizaje automático (machine learning), de naturaleza predictiva, se orienta hacia la capacidad del modelo para clasificar correctamente nuevos casos, priorizando métricas como la precisión, la sensibilidad, la especificidad y el área bajo la curva (AUC).
+
+En este caso, la regresión logística es el modelo más sencillo dentro del aprendizaje supervisado para clasificación binaria, sirviendo como puerta de entrada a modelos más complejos como árboles de decisión, SVM o redes neuronales artificiales. Son varias las ventajas respecto al uso de este modelo como primera aproximación en la resolución de un problema de clasificación: 
+
+- i) Se basa en una función sigmoide que transforma una combinación lineal en una probabilidad, 
+- ii) tiene pocos hiperparámetros (ideal para entender el pipeline de ajuste de modelos), 
+- iii) permite explicar la relación entre el umbral de decisión y las métricas de clasificación, y 
+- iv) es rápido de entrenar y fácil de interpretar.
+
+El siguiente paso sería entonces usar, por ejemplo, el modelo obtenido en el apartado anterior para desplegarlo en clínica, es decir, que el oncólogo pueda usar esa ecuación obtenida en la consulta para introducir los valores de un nuevo paciente y obtener un valor entre 0 y 1 (recordad la salida del modelo de regresión logística) que se intepretará como la probabilidad de que se produzca el evento, en este caso la RCP. En base a esta información, el clínico tomará la decisión terapeútica que considere conveniente. No perdáis de vista este objetivo.
+
+En primer lugar, tendremos que analizar la eficacia o precisión de nuestro modelo a la hora de clasificar correctamente la clase a la que pertenecen cada uno de los patrones del conjunto de datos. Es lo que se conoce como ACC aparente, procedimiento que podemos dividir en dos pasos:
+
+Una vez se ha estimado un modelo de regresión logística mediante la función glm, se calcula la salida del modelo para cada uno de los patrones utilizados en el entrenamiento (término computacional para referirnos al ajuste del modelo). Para ello se utilizará la función predict, que toma como parámetros: i) el modelo ajustado, ii) el conjunto de patrones sobre los que se quiere calcular la respuesta del modelo y iii) el tipo de respuesta, que en nuestro caso habrá que configurar como “response” para obtener un valor entre 0 y 1, que interpretaremos como la probabilidad de que se produzca el evento RCP.
+
+A partir de la respuesta del modelo (valor entre 0 y 1) tendremos que crear una regla de decisión que permita convertir ese valor de respuesta en una clase u otra. Es decir, si la respuesta del modelo es 0.34 para un determinado paciente, tendremos que decidir si, con ese valor, consideramos que se produce o no el evento para ese paciente. Posteriormente se comparará la clase predicha por el modelo con la clase real, y decidiremos si es un acierto o fallo en la clasificación. Lo habitual es utilizar el valor umbral de 0.5 para decidir si la respuesta del modelo la consideramos “RCP” o “no RCP”. En este caso, podríamos considerar que si la respuesta del modelo es menor que 0.5 asignamos el patrón a la clase “no RCP”, mientras que si es mayor o igual que 0.5 lo asignaríamos a la clase “RCP”.
+
+En lugar de modelar directamente la media de la variable dependiente, la regresión logística estima la probabilidad de ocurrencia del evento en función de las variables explicativas. Por tanto, en nuestro contexto, el modelo estima la probabilidad de que un paciente logre una RCP en función de factores clínicos como el tamaño del tumor, el grado histológico y el uso de antibióticos.
+
+Los coeficientes del modelo indican la dirección y magnitud de esta relación: un valor positivo implica que a medida que aumenta la variable predictora, también lo hace la probabilidad de RCP, mientras que un coeficiente negativo indica lo contrario. Estos efectos se interpretan más fácilmente a través del odds ratio (OR), que cuantifica cuánto se multiplican las probabilidades de respuesta por cada unidad de cambio en la variable independiente. Por ejemplo, un OR menor a 1 indica una disminución en la probabilidad del evento, y uno mayor a 1, un aumento. La significancia estadística de cada predictor se evalúa con el p-valor: si es menor a 0.05, el efecto se considera significativo. Además, la devianza residual y el AIC se utilizan para evaluar la calidad del modelo: cuanto más bajos, mejor ajuste. 
+
+Ahora, ajustamos un modelo con el siguiente código:
+
+```{r}
+modelo <- glm((RCP_1 == "SI") ~ TAMAÑO + GRADO_CAT + ANTIBIOTICO, data = datos, family = binomial)
+summary(modelo)
+```
+
+El intercepto del modelo tiene un valor negativo significativo (−0.72107, p ≈ 0.00075), lo que indica que, en condiciones de referencia (tumores de grado 1/2 y sin antibióticos, con tamaño igual a 0), la probabilidad base de lograr una RCP es baja.
+
+En cuanto al tamaño del tumor, su coeficiente (−0.09892, p ≈ 0.0287) es negativo y significativo, lo que sugiere que a mayor tamaño tumoral, menor probabilidad de alcanzar una RCP. Al convertirlo a OR → exp(−0.09892) ≈ 0.906, se concluye que por cada cm adicional en el tamaño del tumor, los odds de RCP disminuyen aproximadamente un 9.4%, lo cual es clínicamente coherente.
+
+En la salida del modelo de regresión logística, el término `GRADO_CAT3` aparece porque R convierte automáticamente las variables categóricas en variables indicadoras (también llamadas dummies) al construir el modelo. En este caso, la variable `GRADO_CAT` tiene dos niveles: `"1/2"` y `"3"`. R toma por defecto el primer nivel como referencia (en este caso `"1/2"`) y crea una nueva variable binaria (`GRADO_CAT3`) que vale 1 cuando el tumor es de grado 3 y 0 cuando es de grado 1 o 2. Por tanto, el coeficiente estimado para `GRADO_CAT3` refleja el cambio en los log-odds de alcanzar una respuesta completa patológica (RCP) cuando el tumor es de grado 3 en comparación con el grupo de referencia (grado 1/2). Esta codificación es estándar en regresión logística y permite interpretar fácilmente los efectos de cada categoría respecto a la base.
+
+Para el grado histológico, se observa que los tumores de grado 3 tienen un coeficiente positivo y altamente significativo (0.73212, p < 0.0001), con un OR ≈ exp(0.73212) ≈ 2.08. Esto significa que los pacientes con tumores de grado 3 tienen más del doble de odds de lograr una RCP en comparación con aquellos de grado 1 o 2. Este hallazgo sugiere que, aunque los tumores de alto grado son más agresivos, también podrían ser más sensibles a la quimioterapia.
+
+Por su parte, el uso de antibióticos (categoría "SI") muestra un coeficiente negativo (−0.26980), lo cual indicaría una disminución en la probabilidad de RCP; sin embargo, esta asociación no es estadísticamente significativa (p ≈ 0.116), por lo que no se puede concluir con seguridad que el uso de antibióticos influya directamente en la respuesta completa.
+
+El modelo presenta una reducción moderada en la devianza (de 870.73 a 846.16), lo que sugiere que los predictores aportan cierta capacidad explicativa respecto a la variable dependiente. El AIC (854.16) puede utilizarse como referencia para comparar este modelo con otros más complejos o simplificados.
+
+En resumen, este modelo confirma que tanto el tamaño tumoral como el grado histológico son predictores estadísticamente significativos de la respuesta completa patológica, mientras que el uso de antibióticos, aunque presenta una tendencia negativa, no alcanza significancia estadística. Estos hallazgos refuerzan la importancia de estos factores en la estratificación clínica y el diseño de estrategias terapéuticas personalizadas.
+
+### Selección de Variables con Regresión Stepwise en R
+
+Tras el análisis bivariante exhaustivo presentado en secciones anteriores identificamos un conjunto de variables clínicamente relevantes y estadísticamente significativas en relación con la respuesta completa patológica (RCP_1). Las variables con mayor consistencia estadística y sustento clínico fueron: TAMAÑO, GRADO_CAT, Ki67_CAT, HT_ADY_OK, ANTIBIOTICO, FENOTIPO_IHQ, RT, Tn, Nx.
+
+Para la construcción del modelo, utilizamos el procedimiento de selección de variables stepwise (por pasos), una técnica iterativa que permite construir un modelo parsimonioso y estadísticamente óptimo. Esta metodología evalúa sistemáticamente el impacto de añadir o eliminar cada variable candidata con base en un criterio de información: en este caso, el Akaike Information Criterion (AIC). Cuanto menor es el AIC, mejor es el balance entre calidad del ajuste y complejidad del modelo.Existen tres variantes:
+
+-*Forward selection*: parte de un modelo vacío e incorpora variables una a una si mejoran el ajuste.
+
+-*Backward elimination*: parte del modelo completo y elimina variables si su exclusión mejora el AIC.
+
+-*Stepwise (bidireccional)*: combina los dos métodos anteriores, añadiendo o eliminando variables según el ajuste.
+
+```{r}
+library(MASS)
+
+# Codificación binaria de la variable dependiente, creamos una nueva variable binaria RCP_bin a partir de la variable RCP_1.
+datos$RCP_bin <- ifelse(datos$RCP_1 == "SI", 1, 0)
+datos$RCP_bin <- factor(datos$RCP_bin, levels = c(0, 1))
+
+
+# Modelo nulo (solo intercepto, sin predictores)
+modelo_null <- glm(RCP_bin ~ 1, data = datos, family = binomial)
+
+# Modelo completo
+modelo_full <- glm(RCP_bin ~ TAMAÑO + GRADO_CAT + ANTIBIOTICO + FENOTIPO_IHQ + T + RT,
+                   data = datos, family = binomial)
+
+# Métodos de selección
+
+#Comienza con el modelo nulo (modelo_null) y agrega variables una a una, eligiendo en cada paso la que más reduce el AIC. e detiene cuando no se puede mejorar el AIC agregando más variables. El argumento scope define el rango de fórmulas posibles: mínimo ~1 y máximo el modelo_full.
+
+modelo_forward <- stepAIC(modelo_null, 
+                          scope = list(lower = ~1, upper = formula(modelo_full)), 
+                          direction = "forward")
+```
+
+
+```{r}
+#Comienza con el modelo completo y elimina variables una a una. En cada paso quita la variable que menos contribuye (según AIC), hasta que quitar más variables no mejora el modelo.
+modelo_backward <- stepAIC(modelo_full, direction = "backward")
+```
+
+
+```{r}
+modelo_both <- stepAIC(modelo_null, 
+                       scope = list(lower = ~1, upper = formula(modelo_full)), 
+                       direction = "both")
+
+
+```
+Este modelo mostró un AIC final de 794.56, una mejora sustancial frente al AIC del modelo nulo (872.73). A lo largo del proceso iterativo, se evaluó la contribución individual de cada variable. En cada paso, se mantuvieron únicamente aquellas cuyo aporte reducía el AIC, es decir, aquellas que aumentaban la capacidad explicativa del modelo sin incrementar innecesariamente su complejidad.
+
+En particular, FENOTIPO_IHQ fue la primera variable seleccionada, mostrando un efecto muy fuerte en la reducción del AIC (de 872.73 a 804.07), seguida por GRADO_CAT, TAMAÑO y, finalmente, ANTIBIOTICO. Por el contrario, variables como RT o T no lograron una reducción suficiente del AIC y fueron descartadas del modelo final, indicando un efecto marginal o dependiente de otras variables ya incluidas.
+```{r}
+library(pROC)
+
+#modelo definitivo 
+modelofinal <- modelo_forward  
+
+# 1. Predicciones, Calcular la probabilidad de RCP para cada paciente del conjunto de entrenamiento
+probabilidades <- predict(modelofinal, newdata = datos, type = "response")
+# Umbral clásico: 0.5
+predicciones <- ifelse(probabilidades >= 0.5, 1, 0)
+
+# 2. Matriz de confusión y métricas
+# Simular predicciones y valores reales
+pred <- factor(c(1, 0, 1, 1))
+real <- factor(c(1, 0, 0, 1))
+
+# Asegúrate de que sean factores con los mismos niveles
+real <- factor(datos$RCP_bin, levels = c(0,1))
+pred <- factor(predicciones, levels = c(0,1))
+
+# Matriz de confusión
+conf_matrix <- table(Predicted = pred, Actual = real)
+print(conf_matrix)
+
+# Métricas manuales
+TP <- conf_matrix["1", "1"]
+TN <- conf_matrix["0", "0"]
+FP <- conf_matrix["1", "0"]
+FN <- conf_matrix["0", "1"]
+
+accuracy  <- (TP + TN) / sum(conf_matrix)
+precision <- TP / (TP + FP)
+recall    <- TP / (TP + FN)
+f1_score  <- 2 * precision * recall / (precision + recall)
+
+cat("Accuracy :", round(accuracy, 3), "\n")
+cat("Precision:", round(precision, 3), "\n")
+cat("Recall   :", round(recall, 3), "\n")
+cat("F1 Score :", round(f1_score, 3), "\n")
+
+
+# 3. Curva ROC y AUC
+roc_obj <- roc(real, probabilidades)
+plot(roc_obj, main = "Curva ROC")
+cat("AUC:", auc(roc_obj), "\n")
+
+```
+
+
+
+
+En conclusión, el modelo RCP_bin ~ FENOTIPO_IHQ + GRADO_CAT + TAMAÑO + ANTIBIOTICO es el mejor modelo posible según el criterio AIC, dadas las variables y los datos. No es coincidencia, es porque las variables seleccionadas son las únicas que realmente contribuyen al modelo sin sobreajustarlo.
+
+### Repeated-HoldOut 
+
+Hasta ahora hemos utilizado todo el dataset para ajustar y entender el modelo, en una fase exploratoria en la que el objetivo principal es explorar las variables y su relación con el objetivo del estudio construyendo un modelo explicativo (por ej, en contexto clínico o epidemiológico). Este enfoque nos ha permitido comparar diferentes especificaciones del modelo (selección de variables, posibles interacciones, parámetros si los hubiera, etc) y obtener, además, coeficientes interpretables de la calidad de ajuste de los modelos. Esto es muy habitual en papers clínicos, en los que se ajusta un modelo con todos los datos y se discuten los coeficientes, no tanto la capacidad predictiva.
+
+No obstante, si queremos poner el modelo en producción y proporcionar una confianza al usuario respecto a los resultados obtenidos por el modelos en datos no “vistos” durante el entrenamiento, el ACC aparente es demasiado optimista como valor de precisión en predicción. Es cierto que nos proporciona un valor exacto de precisión del modelo como clasificador de todos los patrones del conjunto de datos, pero no permite afirmar nada sobre la precisión del mismo si calculamos la salida para un patrón distinto a los disponibles en el conjunto de datos utilizado. Para solucionar este problema y obtener un valor de precisión en la predicción correcta de nuevos datos, se utilizan métodos de validación interna de los modelos.
+
+
+El método de HoldOut se basa en la división del conjunto de datos en dos subconjuntos, uno para entrenamiento/estimación del modelo y otro de test para calcular la capacidad de generalización del mismo. En cuanto al tamaño de los subconjuntos de datos, no hay regla alguna, aunque lo habitual es usar 1/3 del tamaño del conjunto de datos para test y el resto para entrenamiento del modelo. También son comunes en la literatura los esquemas de validación 25%-75% o 20%-80%.
+
+Como se ha comentado en clase, el método de HoldOut puede presentar dos claros problemas: 
+- i) la reserva de datos para test reduce el número de casos usados para training, y 
+- ii) una división aleatoria “desafortunada” del conjunto de datos puede conducir a una estimación pesimista del ACC o cualquier otra métrica utilizada. Para solucionar este problema se utilizan técnicas de “resampling”, que usadas sobre HoldOut permiten implementar el método conocido como “Repeated HoldOut”.
+
+Si solo hacemos una partición aleatoria (una vez), el resultado puede depender mucho de la suerte:  
+Quizás, por azar, el conjunto de validación tiene casos muy fáciles o muy difíciles. Por eso, repetimos el proceso varias veces (k veces):
+
+1. Cada vez, dividimos aleatoriamente los datos de entrenamiento en entrenamiento y validación.
+2. Entrenamos y validamos el modelo.
+3. Guardamos el resultado.
+4. Al final, promediamos los resultados de todas las repeticiones.
+
+
+En la implementación de este procedimiento se podrá utilizar la función createDataPartition del paquete caret, que implementa algoritmos de clasificación y regresión para Machine Learning. Concretamente, esta función toma como parámetros un vector con las etiquetas de la clase a la que pertenece cada patrón del conjunto de datos; el número de veces que realiza la selección aleatoria y el porcentaje de datos que selecciona sobre el conjunto total de patrones. La función devuelve una lista con los índices de los patrones en cada selección realizada. Una de las características importantes de esta función es que la división de los conjuntos la realiza de forma estratificada, es decir, genera subconjuntos de datos tratando de respetar la distribución de patrones de cada clase en el conjunto de datos completo.
+
+En este amparatado haremos la implementación del procedimiento de Repeated-HoldOut para la estimación de la capacidad de generalización del modelo (datos no "vistos" en el entrenamiento). Se analizarán la influencia de la n (número de repeticiones del RHOut) y el % de divsión entre datos de entrenamiento y test.
+
+Dividimos el dataset en dos 
+```{r}
+
+library(caret)
+
+# Fijar semilla para reproducibilidad
+set.seed(123)
+
+
+
+# Definir las variables importantes
+variables_importantes <- c("RCP_bin", "EDAD_DIAGNOSTICO", "FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "ANTIBIOTICO")
+
+# Filtrar solo las columnas importantes del dataset original
+datos<- datos[, variables_importantes]
+
+numericas <- colnames(datos)[sapply(datos, is.numeric)]
+categoricas <- colnames(datos)[!colnames(datos) %in% numericas]
+str(numericas)
+str(categoricas)
+
+# Crear partición: 80% para entrenamiento + validación, 20% para test
+indice_train <- createDataPartition(datos$RCP_bin, p = 0.8, list = FALSE)
+
+# Dividir los datos
+datos_trainval <- datos[indice_train, ]
+datos_test <- datos[-indice_train, ]
+
+# Mostrar dimensiones de los subconjuntos
+cat("Tamaño datos_trainval:", nrow(datos_trainval), "\n")
+cat("Tamaño datos_test:", nrow(datos_test), "\n")
+
+
+```
+Cuando desarrollamos un modelo de machine learning, queremos saber cómo funcionará con datos nuevos que nunca hemos visto.  
+Para simular esta situación, reservamos una parte de nuestros datos (el conjunto de test) y NO lo usamos para nada durante el desarrollo del modelo.  
+Solo lo usamos al final, cuando ya hemos elegido y ajustado nuestro modelo definitivo.  
+Así obtenemos una estimación honesta de su rendimiento.
+
+El resto de los datos (los que no son test) se usan para:
+
+- Entrenar el modelo (aprender patrones)
+- Validar el modelo (probar diferentes configuraciones o modelos y elegir el mejor)
+
+
+Necesitamos un conjunto de validación interno para elegir el mejor modelo y sus parámetros, necesitamos probar varias opciones.  
+Si usáramos el conjunto de test para esto, estaríamos "haciendo trampa", porque el modelo se ajustaría a esos datos.
+
+#### Limpieza de datos previa
+```{r}
+# 1. Eliminar variables categóricas con 1 solo nivel
+factores_con_un_nivel <- names(Filter(function(x) is.factor(x) && length(levels(x)) < 2, datos))
+
+cat("Variables categóricas con solo un nivel (serán eliminadas):\n")
+print(factores_con_un_nivel)
+
+# 2. Eliminar estas variables del conjunto de entrenamiento y test
+datos_trainval <- datos_trainval[, !(names(datos_trainval) %in% factores_con_un_nivel)]
+datos_test  <- datos_test[, !(names(datos_test) %in% factores_con_un_nivel)]
+
+
+# Revisar si aún quedan factores con un solo nivel
+sapply(datos_trainval, function(x) if (is.factor(x)) length(levels(x)))
+cat("Número total de NAs en train:", sum(is.na(datos_trainval)), "\n")
+cat("Número total de NAs en test:", sum(is.na(datos_test)), "\n")
+
+
+```
+
+Borramos los NA
+
+```{r}
+# Eliminar filas con NA (solo si son pocas)
+datos_trainval <- na.omit(datos_trainval)
+datos_test <- na.omit(datos_test)
+cat("Número total de NAs en train:", sum(is.na(datos_trainval)), "\n")
+cat("Número total de NAs en test:", sum(is.na(datos_test)), "\n")
+```
+
+Ahora hacemos repeated holdout
+
+
+Comprobamos si las clases están desbalanceadas
+
+```{r}
+library(ggplot2)
+ggplot(datos_trainval, aes(x = RCP_bin)) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribución de Clases", x = "RCP_bin", y = "Frecuencia")
+
+```
+
+
+
+```{r}
+# Cargar librerías necesarias
+library(caret)
+library(pROC)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# CONFIGURACIÓN GENERAL
+variables_modelo <- c("RCP_bin", "FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "ANTIBIOTICO")
+formula <- RCP_bin ~ FENOTIPO_IHQ + GRADO_CAT + TAMAÑO + ANTIBIOTICO
+umbral <- 0.5
+proporciones_entrenamiento <- c(0.5, 0.6, 0.7, 0.8)
+repeticiones_default <- 30
+reps_para_analisis <- c(10, 30, 50, 100)
+
+validacion_repeated_holdout <- function(datos_trainval, p_train, n_reps, formula, umbral = 0.5, mostrar_progreso = FALSE) {
+  resultados_lista <- vector("list", n_reps)
+  if (mostrar_progreso) pb <- txtProgressBar(min = 0, max = n_reps, style = 3)
+  
+  for (i in 1:n_reps) {
+    if (mostrar_progreso) setTxtProgressBar(pb, i)
+
+    train_index <- createDataPartition(datos_trainval$RCP_bin, p = p_train, list = FALSE)
+    train_set <- datos_trainval[train_index, ]
+    valid_set <- datos_trainval[-train_index, ]
+    
+    modelo <- glm(formula, data = train_set, family = binomial)
+    probas <- predict(modelo, newdata = valid_set, type = "response")
+    pred <- ifelse(probas >= umbral, 1, 0)
+
+    cm <- table(Real = valid_set$RCP_bin, Predicho = pred)
+    VP <- ifelse("1" %in% rownames(cm) & "1" %in% colnames(cm), cm["1", "1"], 0)
+    VN <- ifelse("0" %in% rownames(cm) & "0" %in% colnames(cm), cm["0", "0"], 0)
+    FP <- ifelse("0" %in% rownames(cm) & "1" %in% colnames(cm), cm["0", "1"], 0)
+    FN <- ifelse("1" %in% rownames(cm) & "0" %in% colnames(cm), cm["1", "0"], 0)
+
+    acc <- (VP + VN) / sum(cm)
+    sen <- ifelse((VP + FN) == 0, NA, VP / (VP + FN))
+    esp <- ifelse((VN + FP) == 0, NA, VN / (VN + FP))
+    pre <- ifelse((VP + FP) == 0, NA, VP / (VP + FP))
+    f1  <- ifelse(is.na(pre) | is.na(sen) | (pre + sen) == 0, NA, 2 * pre * sen / (pre + sen))
+
+    # Silenciar salida de pROC
+    auc_val <- suppressMessages(as.numeric(auc(roc(valid_set$RCP_bin, probas))))
+    
+    resultados_lista[[i]] <- c(Accuracy = acc, Sensibilidad = sen, 
+                               Especificidad = esp, Precision = pre,
+                               F1 = f1, AUC = auc_val)
+  }
+
+  if (mostrar_progreso) close(pb)
+  resultados <- as.data.frame(do.call(rbind, resultados_lista))
+  return(na.omit(resultados))
+}
+
+# 1. Análisis de distintas proporciones de entrenamiento
+resultados_por_proporcion <- list()
+
+for (p in proporciones_entrenamiento) {
+  cat("\n Repeated Hold-Out con proporción de entrenamiento =", p, "\n")
+  res <- validacion_repeated_holdout(datos_trainval, p_train = p, n_reps = repeticiones_default, formula, umbral)
+  resultados_por_proporcion[[paste0("p_train_", p)]] <- res
+  print(summary(res))
+}
+
+# Resumen por media de cada configuración
+resumen_metricas <- sapply(resultados_por_proporcion, function(x) colMeans(x, na.rm = TRUE))
+print(round(resumen_metricas, 4))
+
+# Visualización de AUC y Sensibilidad según proporción de entrenamiento
+resultados_largos <- bind_rows(resultados_por_proporcion, .id = "Proporcion")
+
+ggplot(resultados_largos, aes(x = Proporcion, y = AUC)) +
+  geom_boxplot(fill = "steelblue", alpha = 0.7) +
+  labs(title = "AUC según proporción de entrenamiento",
+       x = "Proporción de entrenamiento", y = "AUC") +
+  theme_minimal()
+
+ggplot(resultados_largos, aes(x = Proporcion, y = Sensibilidad)) +
+  geom_boxplot(fill = "orange", alpha = 0.7) +
+  labs(title = "Sensibilidad según proporción de entrenamiento",
+       x = "Proporción de entrenamiento", y = "Sensibilidad") +
+  theme_minimal()
+
+#  2. Análisis de distintas repeticiones con p_train = 0.7
+cat("\n Análisis del número de repeticiones con p_train = 0.7\n")
+for (r in reps_para_analisis) {
+  cat("\n Repeticiones:", r, "\n")
+  res <- validacion_repeated_holdout(datos_trainval, p_train = 0.7, n_reps = r, formula, umbral)
+  print(round(colMeans(res, na.rm = TRUE), 4))
+}
+
+
+```
+|
+#### 1. El número de repeticiones (`n`)
+
+
+
+- A partir de 30 repeticiones, las métricas se estabilizan.
+- El AUC y la exactitud apenas cambian entre 30, 50 y 100 repeticiones.
+- Las pequeñas variaciones en sensibilidad y especificidad se deben al muestreo aleatorio.
+- 10 repeticiones ya ofrecen una estimación razonable, pero pueden ser menos estables.
+
+#### 2. El porcentaje de división (`p_train`)
+
+- La exactitud y AUC aumentan ligeramente al subir el porcentaje de entrenamiento hasta 0.7.
+- Sensibilidad disminuye levemente** al aumentar el tamaño de entrenamiento:
+
+  - Más datos para entrenar → modelo más ajustado
+  - Pero se reduce la cantidad de datos de test para evaluar generalización → posible sobreajuste
+- p_train = 0.7 ofrece el mejor AUC, y mantiene equilibrio entre sensibilidad y especificidad.
+- El mejor compromiso entre ajuste y generalización se obtiene con 70% entrenamiento / 30% test*
+
+En conslusión usamos 30 repeticiones y p train 0.7
+
+
+#### Análisis de métricas del modelo en función de las características del conjunto de datos
+Análisis de las diferentes métricas en función de las características del conjunto de datos (ACC, precisíon, recall, f1-score, AUC):
+
+Tras aplicar el procedimiento de validación Repeated Hold-Out con una proporción de entrenamiento del 70% y 30 repeticiones, se analizaron las principales métricas de evaluación del modelo de regresión logística ajustado con las variables seleccionadas. Los resultados obtenidos permiten evaluar el rendimiento global del modelo, así como su capacidad para discriminar entre pacientes con y sin el evento RCP.
+
+La exactitud (accuracy) media fue del 72%, lo que indica un buen porcentaje general de aciertos. Sin embargo, en un conjunto de datos desbalanceado como el presente, donde la clase mayoritaria corresponde a los casos sin RCP, esta métrica puede resultar engañosa, ya que tiende a sobrevalorar el rendimiento si no se complementa con otras métricas más sensibles al desbalance.
+
+La precisión alcanzó un valor medio del 64%, lo que significa que, de todas las veces que el modelo predijo que un paciente desarrollaría RCP, acertó en aproximadamente dos tercios de los casos. Este valor es razonable, aunque todavía podría mejorarse, especialmente si se reduce la tasa de falsos positivos.
+
+La sensibilidad (recall), que mide la capacidad del modelo para identificar correctamente a los pacientes que realmente desarrollan RCP, fue considerablemente baja (29%). Esta métrica es crítica en contextos clínicos, donde no identificar un caso positivo puede tener consecuencias graves. El bajo valor de sensibilidad sugiere que el modelo está fallando al captar muchos casos reales de RCP, lo que indica un alto número de falsos negativos.
+
+Derivado de la precisión y la sensibilidad, el F1-score se estima alrededor de 0.40. Esta métrica representa el balance armónico entre ambas y confirma que el modelo actualmente no logra un buen equilibrio: la mejora en precisión se está produciendo a costa de sacrificar la detección de positivos. En situaciones donde ambas métricas son importantes, este resultado evidencia un rendimiento limitado.
+
+Por otro lado, el AUC (Área Bajo la Curva ROC) fue de aproximadamente 0.71. Este valor refleja la capacidad del modelo para discriminar correctamente entre clases positivas y negativas. Aunque es aceptable y sugiere que el modelo no está clasificando al azar, se encuentra por debajo de valores considerados óptimos (habitualmente >0.80 en modelos robustos).
+
+En resumen, el modelo presenta un buen rendimiento general en términos de especificidad y exactitud, pero un rendimiento pobre en sensibilidad, lo cual es especialmente preocupante en un contexto donde se pretende identificar casos clínicos positivos. El F1-score y el AUC, aunque útiles, también reflejan este desbalance. Se recomienda ajustar el umbral de decisión del modelo, aplicar técnicas de balanceo de clases como `upsampling`, y considerar modelos más complejos como Random Forest o XGBoost para mejorar la capacidad predictiva y generalizadora del sistema. Además, la inclusión de nuevas variables predictoras relevantes podría aportar información adicional útil para el modelo.
+
+### Busqueda exhaustiva
+Tras fijar n y %, usamos el algoritmo de búsqueda exhaustiva para encontrar la mejor combinación de variables, teniendo en cuenta el esquema de validación honesta de las variables del modelo.
+
+```{r}
+#  CARGA DE LIBRERÍAS
+library(caret)
+library(pROC)
+library(dplyr)
+library(ggplot2)
+library(combinat)
+
+#   CONFIGURACIÓN INICIAL
+variables_candidatas <- c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "ANTIBIOTICO")
+p_train <- 0.7
+n_reps <- 30
+umbral <- 0.5
+
+
+#  GENERAR COMBINACIONES DE VARIABLES
+lista_combinaciones <- list()
+for (k in 2:length(variables_candidatas)) {
+  lista_combinaciones <- c(lista_combinaciones,
+                           combn(variables_candidatas, k, simplify = FALSE))
+}
+# EVALUAR CADA COMBINACIÓN
+resultados_modelos <- list()
+
+for (i in seq_along(lista_combinaciones)) {
+  vars <- lista_combinaciones[[i]]
+  formula <- as.formula(paste("RCP_bin ~", paste(vars, collapse = " + ")))
+  
+  cat("\n Evaluando combinación:", paste(vars, collapse = ", "), "\n")
+  
+  resultado <- validacion_repeated_holdout(datos_trainval, p_train, n_reps, formula, umbral)
+  resumen <- colMeans(resultado, na.rm = TRUE)
+  
+  resultados_modelos[[i]] <- list(
+    variables = vars,
+    resumen = resumen,
+    detalle = resultado
+  )
+}
+
+#  CREAR RESUMEN DE RESULTADOS
+resumen_modelos <- data.frame(
+  Combinacion = sapply(resultados_modelos, function(x) paste(x$variables, collapse = " + ")),
+  Accuracy = sapply(resultados_modelos, function(x) x$resumen["Accuracy"]),
+  F1 = sapply(resultados_modelos, function(x) x$resumen["F1"]),
+  AUC = sapply(resultados_modelos, function(x) x$resumen["AUC"])
+)
+
+# Ordenar por AUC
+resumen_modelos <- resumen_modelos[order(-resumen_modelos$AUC), ]
+print(resumen_modelos)
+
+#  MOSTRAR MEJOR MODELO
+mejor <- resumen_modelos[1, ]
+cat("\n✅ Mejor combinación:", mejor$Combinacion, "\n")
+cat("AUC promedio:", round(mejor$AUC, 4), " | F1-score promedio:", round(mejor$F1, 4), "\n")
+
+```
+
+```{r}
+mejor <- resumen_modelos[1, ]
+cat("\n✅ Mejor combinación:", mejor$Combinacion, "\n")
+
+cat("AUC promedio:", round(mejor$AUC, 4), " | F1-score promedio:", round(mejor$F1, 4), "\n")
+
+ggplot(resumen_modelos, aes(x = reorder(Combinacion, AUC), y = AUC)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Comparación de AUC por combinación de variables",
+       x = "Combinación", y = "AUC") +
+  theme_minimal()
+
+ggplot(resumen_modelos, aes(x = reorder(Combinacion, F1), y = F1)) +
+  geom_bar(stat = "identity", fill = "orange") +
+  coord_flip() +
+  labs(title = "Comparación de F1-score por combinación de variables",
+       x = "Combinación", y = "F1-score") +
+  theme_minimal()
+
+ggplot(resumen_modelos, aes(x = AUC, y = F1, label = Combinacion)) +
+  geom_point(size = 3, color = "darkblue") +
+  geom_text(size = 3, hjust = 0, vjust = 1) +
+  labs(title = "Comparación AUC vs F1-score",
+       x = "AUC promedio", y = "F1-score promedio") +
+  theme_minimal()
+
+
+```
+
+Para evaluar la capacidad predictiva del modelo de regresión logística bajo un esquema de validación honesta, se implementó un procedimiento de búsqueda exhaustiva considerando todas las combinaciones posibles de dos o más variables predictoras entre `FENOTIPO_IHQ`, `GRADO_CAT`, `TAMAÑO` y `ANTIBIOTICO`. Cada combinación fue sometida a validación mediante el procedimiento de Repeated Hold-Out, utilizando un 70% de los datos para entrenamiento, 30 repeticiones y un umbral de decisión de 0.5. Las métricas empleadas para comparar el rendimiento de los modelos fueron: exactitud (Accuracy), sensibilidad, precisión, F1-score y área bajo la curva ROC (AUC).
+
+De todos los modelos evaluados, la combinación formada por `FENOTIPO_IHQ` y `GRADO_CAT` se destacó como la mejor alternativa en términos de balance general entre simplicidad y rendimiento. Esta combinación alcanzó un AUC promedio de 0.7308, lo que indica una buena capacidad discriminativa para distinguir entre pacientes con y sin recurrencia. Asimismo, logró una exactitud media del 72.96% y un F1-score de 0.407, reflejando un desempeño razonablemente equilibrado entre la detección de verdaderos positivos y la contención de falsos positivos.
+
+Por otro lado, se observó que añadir más variables a esta combinación, como `TAMAÑO` o `ANTIBIOTICO`, no mejora sustancialmente el rendimiento, y en algunos casos introduce una ligera penalización en la precisión o en la estabilidad del F1-score. Por ejemplo, la combinación `FENOTIPO_IHQ + GRADO_CAT + TAMAÑO + ANTIBIOTICO` no logró superar al modelo más simple en ninguna métrica clave, a pesar de su mayor complejidad.
+
+Además, combinaciones que excluyen `FENOTIPO_IHQ` o `GRADO_CAT`, o que están compuestas únicamente por variables como `TAMAÑO` y `ANTIBIOTICO`, presentaron un rendimiento notablemente inferior. Estas configuraciones registraron AUCs por debajo de 0.60 y F1-scores menores a 0.15, lo cual evidencia una muy baja capacidad para capturar casos positivos de forma fiable, especialmente preocupante en contextos clínicos.
+
+En conjunto, este análisis respalda la elección de `FENOTIPO_IHQ + GRADO_CAT` como la combinación más eficaz y parsimoniosa para modelar la probabilidad de recurrencia, considerando tanto el rendimiento predictivo como la interpretabilidad del modelo. as estrategias como el ajuste del umbral, técnicas de balanceo de clases o el uso de modelos no lineales.
+
+Finalmente, comparemos esto con los datos de test:
+```{r}
+# Predicciones sobre test
+probas_test <- predict(modelofinal, newdata = datos_test, type = "response")
+predicciones_test <- ifelse(probas_test >= 0.5, 1, 0)
+
+# Matriz de confusión
+confusion_test <- confusionMatrix(
+  factor(predicciones_test),
+  factor(datos_test$RCP_bin),
+  positive = "1"
+)
+
+print(confusion_test)
+
+# AUC
+roc_test <- roc(datos_test$RCP_bin, probas_test)
+cat("AUC en datos_test:", auc(roc_test), "\n")
+
+# F1-score
+VP <- confusion_test$table["1", "1"]
+FP <- confusion_test$table["0", "1"]
+FN <- confusion_test$table["1", "0"]
+precision <- VP / (VP + FP)
+recall <- VP / (VP + FN)
+f1_test <- 2 * (precision * recall) / (precision + recall)
+cat("F1-score en test:", round(f1_test, 3), "\n")
+
+```
+El modelo final basado en las variables FENOTIPO_IHQ y GRADO_CAT, seleccionado por búsqueda exhaustiva y validado mediante Repeated Hold-Out, fue evaluado sobre el conjunto independiente datos_test. Los resultados mostraron una exactitud del 69.78%, una especificidad alta (92.63%), pero una sensibilidad muy baja (20.45%), indicando que el modelo falla en detectar correctamente la mayoría de los casos positivos (RCP = 1). El F1-score fue 0.30 y el AUC alcanzó 0.622, lo que sugiere una capacidad discriminativa moderada y menor que la observada en la validación interna (AUC ≈ 0.73). Esto apunta a una capacidad de generalización limitada del modelo actual, especialmente preocupante en contextos clínicos donde la sensibilidad es prioritaria. Se recomienda ajustar el umbral de decisión, aplicar técnicas de balanceo de clases y explorar modelos más robustos.
+
+## PARTE 2: Algoritmos de Aprendizaje Computacional
+En problemas de minería de datos aplicados a salud, como la predicción de la pérdida de seguimiento de pacientes, trabajamos con conjuntos de datos que pueden contener decenas de variables clínicas, administrativas y sociodemográficas. Sin embargo, no todas las variables aportan información útil para la tarea predictiva, y algunas pueden incluso perjudicar el rendimiento del modelo o dificultar su interpretación.
+
+Seleccionar un subconjunto de variables relevantes nos permite:
+
+Mejorar la interpretabilidad del modelo: modelos más simples son más comprensibles para profesionales clínicos.
+Reducir el riesgo de sobreajuste: menos variables implican menor complejidad y mejor generalización.
+Disminuir el coste computacional y el tiempo de entrenamiento.
+Facilitar la validación y el despliegue del modelo en entornos reales.
+Además, en el ámbito de la ingeniería de la salud, es fundamental justificar cada variable utilizada desde un punto de vista clínico o asistencial. La selección de variables no es solo una técnica matemática, sino también un ejercicio de razonamiento crítico.
+
+La mayoría de las técnicas de selección de variables se pueden agrupar en tres clases bien diferenciadas:
+
+### Métodos de filtrado
+Estos métodos seleccionan variables basándose en características estadísticas de los datos, sin involucrar un modelo de machine learning, evaluando cada variable de manera independiente. Es decir, en primer lugar se seleccionan las variables y posteriormente se usan para estimar el modelo de clasificación/predicción. Las ventajas de estos métodos es que no dependen de un algoritmo de machine learning específico, son rápidos y computacionalmente eficientes, además de fáciles de comprender e implementar. Por otro lado, no consideran interacciones entre variables y pueden no ser tan eficientes como otros métodos.
+
+
+
+Entre los métodos de filtrado más comunes tenemos:
+
+####Pruebas de Hipótesis:
+Chi-cuadrado: Evalúa la independencia entre variables categóricas.
+ANOVA: Compara las medias de diferentes grupos para variables continuas.
+Correlación:
+Pearson: Para variables continuas.
+Spearman: Para variables ordinales o no lineales.
+Información Mutua: Mide la dependencia entre variables.
+Varianza:
+Varianza Baja: Filtra variables con varianza baja, que aportan poca información.
+####Métodos wrapper
+Los métodos “wrapper” de selección de variables se basan en el rendimiento del modelo. Estos métodos utilizan algoritmos de aprendizaje automático para evaluar el rendimiento del modelo con diferentes conjuntos de variables y, a continuación, seleccionan las variables que proporcionan el mejor resultado.
+
+Estos métodos tienen en cuenta la interacción entre las variables (respecto a los métodos de filtrado) y generalmente proporcionan mejor rendimiento en los modelos de clasificación, pero, por otro lado, son computacionalmente más costoso (ya que requieren ajustar el modelo varias veces para evaluar diferentes conjuntos de variables) y pueden presentar problemas de sobreajuste si no se controla adecuamente.
+
+
+
+Entre los métodos más utilizados en la literatura, se encuentran los siguientes:
+
+#####Selección secuencial:
+Forward selection: Comienza con modelos simples y va añadiendo una a una las variables que mejoran el modelo.
+Backward elimination: Comienza con todas las variables y elimina una a una las que menos contribuyen al modelo final.
+Stepwise Selection: Combina las dos anteriores.
+#####Algoritmos genéticos: 
+Utiliza principios de evolución y selección natural para seleccionar variables.
+
+####Métodos embedded
+la selección de variables se integra directamente en el proceso de entrenamiento del modelo. Estos métodos utilizan técnicas de penalización como la regularización Lasso o Ridge para penalizar la importancia de las variables menos relevantes. Es decir, los métodos “embedded” seleccionan variables al mismo tiempo que se ajustan los parámetros del modelo.
+
+####Regresión Regularizada:
+Lasso (L1): Penaliza la suma de los valores absolutos de los coeficientes, eliminando algunos completamente.
+Ridge (L2): Penaliza la suma de los cuadrados de los coeficientes, reduciéndolos pero sin eliminar ninguno.
+Elastic Net: Combina L1 y L2.
+####Árboles de Decisión y Random Forest:
+Importancia de Variables: Calcula la importancia de cada variable basada en la reducción de la impureza (Gini, Entropía).
+Métodos de Ensamble: Se aplican técnicas como Gradient Boosting que proporcionan medidas de importancia de variables.
+El paquete de R FSelector ofrece tanto algoritmos para filtrado de características (ej. cfs, chi-squared, information gain, linear correlation), como algoritmos de tipo wrapper para estimación de clasificadores y búsqueda del subconjunto de variables adecuado (ej. forward search, backward search, best-first search). Este paquete también ofrece la posibilidad de elegir un subcojunto de características en función del peso de las variables y de un determinado valor umbral.
+
+### Algoritmos Usados
+Se aplicarán algoritmos de selección de variables del tipo filtrado y wrapper.
+Aclaración: Los algoritmos wrapper son independientes del algoritmo de aprendizaje utilizado, es decir, se deberán implementar un algoritmo wrapper (búsqueda exhaustiva, feedforward selection, o cualquier otro que use al AUC para la selección del mejor modelo), pero se compararán al menos tres algoritmos de aprendizaje (RRNN, SVM y DT) de la lista de la guía docente, respecto al "gold-standard" en clínica (regresión logística).
+
+En el contexto del presente trabajo, tras la evaluación del rendimiento de un modelo de regresión logística como punto de partida, se ha optado por aplicar tres algoritmos de aprendizaje automático complementarios con el objetivo de mejorar el rendimiento predictivo y comparar su comportamiento frente al modelo base. La elección de estos algoritmos se ha realizado teniendo en cuenta tanto la capacidad de generalización, como la naturaleza del problema (clasificación binaria con desbalance de clases) y la necesidad de mantener cierto grado de interpretabilidad.
+
+En segundo lugar, se incorporarán Redes Neuronales Artificiales (RNA) mediante la función `nnet`, dado que ofrecen una gran flexibilidad para capturar patrones complejos en los datos. Su uso está especialmente indicado cuando existen interacciones no evidentes entre las variables, lo cual es frecuente en el ámbito clínico. Se evaluarán distintas configuraciones de arquitectura (número de neuronas en la capa oculta) y regularización (weight decay) con el objetivo de evitar sobreajuste y mejorar métricas como la sensibilidad y el F1-score.
+
+En segundo lugar, se utilizarán Máquinas de Soporte Vectorial (SVM), dado que este algoritmo es robusto frente al desbalance de clases y permite modelar relaciones no lineales mediante el uso de funciones kernel. Además, su rendimiento suele ser competitivo en tareas de clasificación, siendo especialmente útil cuando la frontera de decisión no es linealmente separable. Se explorarán diferentes combinaciones de los parámetros `C` y `gamma` para optimizar el rendimiento.
+
+Por último, se aplicará el algoritmo de Árboles de Decisión (rpart), ampliamente valorado por su simplicidad e interpretabilidad, aspectos fundamentales en contextos clínicos. Este modelo permite visualizar fácilmente las reglas de decisión y comprender cómo se llega a una determinada predicción, lo cual es especialmente útil para su adopción por parte de profesionales sanitarios.
+
+Los algoritmos seleccionados representan enfoques distintos pero complementarios: SVM como modelo robusto en espacios no lineales, RNA por su capacidad de modelar relaciones complejas, y árboles de decisión por su transparencia. Estos modelos serán evaluados bajo el mismo esquema de validación honesta empleado en la regresión logística, permitiendo una comparación justa de sus métricas de rendimiento (AUC, F1-score, sensibilidad y especificidad). 
+
+En el presente trabajo también se han considerado otras alternativas de algoritmos de aprendizaje supervisado. Sin embargo, se han descartado por distintas razones metodológicas o prácticas, siempre priorizando la coherencia con los objetivos del estudio y las características del conjunto de datos. A continuación, se detallan las opciones descartadas y la justificación correspondiente:
+
+Random Forests fue uno de los candidatos iniciales debido a su reconocido rendimiento en tareas de clasificación, especialmente en problemas con muchas variables. Sin embargo, este algoritmo tiende a perder interpretabilidad debido a su estructura basada en múltiples árboles (ensemble), lo cual representa una limitación importante en un contexto clínico, donde la explicabilidad del modelo es clave. Además, ya se ha incluido un árbol de decisión simple (rpart), que cubre parte del mismo enfoque pero de forma más interpretable.
+
+Naive Bayes también fue descartado, principalmente por su supuesto fuerte de independencia entre variables predictoras. En el dominio clínico y sociodemográfico es frecuente encontrar variables con correlación (por ejemplo, edad y menopausia, o tipo de tratamiento y estadio del tumor), por lo que este supuesto resulta poco realista. Esto podría comprometer la fiabilidad de las predicciones y sesgar la clasificación hacia la clase mayoritaria en casos desbalanceados, como ocurre en este conjunto de datos.
+
+K-Nearest Neighbors (KNN) fue excluido principalmente por su baja eficiencia computacional en conjuntos de datos de tamaño medio-grande, como el presente, y su sensibilidad a la escala de las variables. Aunque es un algoritmo sencillo y no paramétrico, su desempeño suele deteriorarse en presencia de ruido o cuando las variables no han sido estandarizadas correctamente. Además, KNN tiende a tener un rendimiento inferior en contextos con desbalance de clases y variables de tipo mixto (categóricas y numéricas).
+
+AdaBoost, a pesar de ser una técnica potente basada en el principio de boosting, fue finalmente descartada por dos motivos. Por un lado, su menor interpretabilidad frente a modelos base como la regresión logística o los árboles simples, lo que puede dificultar su adopción en entornos asistenciales. Por otro lado, aunque puede corregir errores de modelos débiles, su ajuste óptimo requiere una búsqueda intensiva de hiperparámetros y sufre en entornos con alta proporción de ruido o cuando las clases están muy desbalanceadas, como es el caso.
+
+### Validación Cruzada
+
+Se implementará el método de doble validación cruzada (5x2CV - el que vimos en clase) como esquema de validación honesta de los hiperparámetros de los modelos y de las variables relevantes.
+
+El método de Repeated HoldOut presenta dos inconvenientes: 
+-i) solapamiento de cajas usadas como test en cada iteración, y 
+-ii) necesidad de cómputo intensivo para obtener un estimador de la métrica en generalización de cierta robustez. 
+
+La alternativa la representa el método de validación cruzada, que divide el conjunto de datos en K cajas (típicamente K toma el valor 10) y usa en cada iteración una caja para test y el resto para entrenamiento. De esta forma, este procedimiento garantiza que todos los patrones son elegidos una vez como pertenecientes al conjunto de test. Por otro lado, en principio solo habría que hacer K simulaciones.
+
+El paquete caret proporciona la función createFolds que, tomando como entrada el vector de etiquetas conteniendo la clase de cada patrón, devuelve una lista con los índices de los patrones pertenecientes a cada una de las K cajas.
+
+Una estimación fiable del rendimiento de un modelo predictivo requiere separar rigurosamente el proceso de entrenamiento del de evaluación. Esto es especialmente importante cuando se realiza selección de variables, ya que esta etapa puede introducir un sesgo determinante si se ejecuta sobre el conjunto completo de datos antes de la validación. En este caso, es necesario aplicar una estrategia de estimación honesta, que garantiza que la selección de las variables relevantes y de los parámetros de los diferentes algoritmos de aprendizaje no ha estado condicionada por el uso de los datos de evaluación del rendimiento final de los modelos.
+
+En particular, cuando la selección de variables se lleva a cabo mediante métodos de tipo wrapper como la búsqueda por pasos (stepwise) o algoritmos de selección basados en el rendimiento del modelo, es imprescindible disponer de un conjunto de validación interno dentro del proceso de entrenamiento. De lo contrario, el proceso de selección ajustaría las variables no solo a la muestra de entrenamiento, sino también a la muestra de evaluación, comprometiendo la validez externa de los resultados.
+
+Para evitar este sesgo, se implementa una validación cruzada anidada, donde:
+
+-El bucle externo se utiliza exclusivamente para estimar el rendimiento general del modelo, simulando su comportamiento sobre nuevos datos no vistos.
+
+-El bucle interno se emplea para llevar a cabo la selección de variables y el ajuste de hiperparámetros del modelo, incluyendo una validación cruzada interna que garantiza que la selección no utiliza información del conjunto de evaluación externo.
+
+```{r}
+#  Cargar librerías necesarias
+library(pROC)        
+library(caret)      
+library(dplyr)      
+
+#  Fórmula del modelo
+formula <- RCP_bin ~ FENOTIPO_IHQ + GRADO_CAT
+
+# -------------------------------------------------------------
+# 5x2 Cross Validation para Regresión Logística (RL)
+# -------------------------------------------------------------
+set.seed(123)
+aus_outer_rl <- c()  # Guardar AUC por cada iteración del outer loop
+
+for (rep in 1:5) {
+  for (fold in 1:2) {
+    cat("\n Outer loop RL: repetición", rep, "fold", fold, "\n")
+
+    # División 50/50: test y entrenamiento
+    idx_test <- createDataPartition(datos$RCP_bin, p = 0.5, list = FALSE)
+    datos_test <- datos[idx_test, ]
+    datos_train <- datos[-idx_test, ]
+
+    # Entrenar modelo de regresión logística
+    modelo_rl <- glm(formula, data = datos_train, family = binomial)
+
+    # Obtener probabilidades sobre test
+    probas_test_rl <- predict(modelo_rl, newdata = datos_test, type = "response")
+
+    # Calcular AUC
+    auc_rl <- suppressMessages(auc(datos_test$RCP_bin, probas_test_rl))
+
+    cat("AUC RL en test externo:", round(auc_rl, 3), "\n")
+
+    aus_outer_rl <- c(aus_outer_rl, auc_rl)
+  }
+}
+
+# AUC promedio RL
+cat("\n AUC promedio final (Regresión Logística):", round(mean(aus_outer_rl), 3), "\n")
+
+```
+
+
+Este enfoque proporciona una estimación realista de las métricas del modelo, como la precisión, el AUC o f1-score, y evita la sobrestimación frecuente asociada a prácticas de validación no honestas. Además, permite analizar el comportamiento del modelo ante diferentes subconjuntos de variables, algo especialmente relevante en el ámbito sanitario, donde la interpretabilidad y la justificación clínica de los predictores es un aspecto crítico.
+
+### Redes neuronales artificiales
+El ajuste de parámetros en una red neuronal artificial (el tamaño de la arquitectura o número de neuronas en la capa oculta) es crítico para la obtención de buenos resultados en generalización. En esta actividad se deberán probar diferentes tipos de arquitecturas para analizar cuál de ellas produce mejores resultados en cuanto al rendimiento del clasificador. No existe una regla para encontrar el número óptimo de neuronas en la capa oculta para un determinado conjunto de datos, así hay que aplicar un procedimiento exploratorio para estos valores, tal que, tras un análisis inicial para estimar cuáles pueden ser los valores mínimos y máximos, se podrá definir un rango de búsqueda concreto.
+
+Se utilizará la función nnet del paquete nnet para estimar un modelo de red neuronal artificial. Aparte del parámetro formula (común para todos los algoritmos de aprendizaje) y del conjunto de datos, es necesario especificar el tamaño de la arquitectura o número de neuronas en la capa oculta (size), el número máximo de iteraciones y el valor del parámetro que controla el método de regularización (weight-decay) empleado para evitar el sobre-entrenamiento.
+
+Se ha implementado un método wrapper de selección de variables basado en una búsqueda exhaustiva. En concreto, se ha definido un conjunto de variables candidatas, y se han generado de manera explícita todas las combinaciones posibles de tamaño uno hasta cuatro de estas variables. Se calcula el AUC medio sobre los datos de validación interna para cada combinación de variables e hiperparámetros, y se selecciona la que maximiza dicha métrica.
+
+En el contexto de una validación cruzada anidada, una partición 50/50 entre entrenamiento y test externo tiene sentido. Este esquema, busca estimar el rendimiento real de los modelos de forma honesta y replicable, minimizando el sesgo y la varianza. A diferencia de una partición tradicional 80/20, que se emplea cuando se entrena un único modelo final, el 50/50 permite evaluar múltiples configuraciones de modelos en distintas divisiones aleatorias y estratificadas (garantizando balance de clases), priorizando así la comparación objetiva entre algoritmos.
+
+
+```{r, warning=FALSE}
+# Cargar librerías necesarias
+library(nnet)        
+library(pROC)        
+library(caret)      
+library(dplyr)      
+library(ggplot2)    
+
+#  Explicación del esquema de validación cruzada anidada (Nested CV)
+
+# Outer loop (bucle externo): divide el conjunto de datos en varias particiones. Cada una se usa como conjunto de test una sola vez.
+# - Este bucle estima honestamente el rendimiento del modelo sobre datos nuevos.
+# - Aquí NO se ajustan parámetros ni se hace selección de variables.
+
+# Inner loop (bucle interno): dentro de los datos de entrenamiento del outer loop,
+# se crean nuevas particiones para:
+# - Ajustar hiperparámetros (número de neuronas, decay en RNA)
+# - Seleccionar variables si usamos métodos tipo wrapper
+
+# ⚠️ Si usamos AUC como métrica de optimización, NECESITAMOS un inner loop.
+# ⚠️ No podemos usar el conjunto de test para elegir el mejor modelo.
+# ✅ Este proceso evita el sesgo de selección y garantiza una evaluación honesta.
+
+# En este código también se ha incorporado un enfoque wrapper sobre variables:
+# Para cada subconjunto de variables posibles, se ejecuta la validación cruzada interna
+# y se evalúa el AUC medio. El subconjunto que mejor resultado obtiene, junto con la
+# mejor combinación de hiperparámetros, se usa para entrenar el modelo final en el outer loop.
+
+
+# En la doble validación cruzada, si queremos comparar rendimientos promedio entre modelos, 
+# se puede usar un test estadístico como el t-student (si se asume normalidad en la distribución).
+# Como el 5x2 CV genera 10 mediciones (5 repeticiones x 2 folds), se tienen 10 AUC por modelo.
+# El test t de Student para muestras pareadas evalúa si la diferencia entre los modelos (RNA vs RL)
+# es estadísticamente significativa, teniendo en cuenta que cada fold es dependiente dentro de cada repetición.
+
+
+subconjuntos_vars <- list(
+  c("FENOTIPO_IHQ"),
+  c("GRADO_CAT"),
+  c("TAMAÑO"),
+  c("EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT"),
+  c("FENOTIPO_IHQ", "TAMAÑO"),
+  c("GRADO_CAT", "TAMAÑO"),
+  c("FENOTIPO_IHQ", "EDAD_DIAGNOSTICO"),
+  c("GRADO_CAT", "EDAD_DIAGNOSTICO"),
+  c("TAMAÑO", "EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT", "EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "TAMAÑO", "EDAD_DIAGNOSTICO"),
+  c("GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO")
+)
+
+ 
+# Rango de hiperparámetros a evaluar
+decay_vals <-  c(0, 0.001, 0.005, 0.01, 0.05, 0.1)    # Parámetro de regularización
+size_vals <- c(1, 3, 5, 7, 10)            # Tamaño de la capa oculta
+param_grid <- expand.grid(size = size_vals, decay = decay_vals)  # Combinaciones
+
+set.seed(42)  # Semilla para reproducibilidad
+
+# Vectores para guardar resultados
+aus_outer <- c()              # AUC final en test externo
+resultados_rna <- list()      # Guardar configuraciones óptimas y sus resultados
+
+# ------------------ OUTER LOOP -------------------
+# Validación cruzada externa 5x2 (5 repeticiones, 2 folds por repetición)
+for (rep in 1:5) {
+  for (fold in 1:2) {
+    cat("\n Outer loop: repetición", rep, "fold", fold, "\n")
+
+    idx_test <- createDataPartition(datos$RCP_bin, p = 0.5, list = FALSE)
+     datos_test <- na.omit(datos[idx_test, ])
+    datos_trainval <- na.omit(datos[-idx_test, ])        # Datos para inner loop (tuning y selección)
+
+    # Inicialización para guardar la mejor combinación encontrada
+    mejor_auc <- -Inf
+    mejor_subconjunto <- NULL
+    mejor_params <- NULL
+
+    # ---------- WRAPPER ----------
+    # Se prueban varios subconjuntos de variables (predefinidos)
+    for (vars in subconjuntos_vars) {
+
+      # Fórmula del modelo con las variables actuales
+      formula <- as.formula(paste("RCP_bin ~", paste(vars, collapse = "+")))
+
+      # ---------- INNER LOOP ----------
+      # Validación cruzada interna 2-fold para tuning de hiperparámetros
+      folds_inner <- createFolds(datos_trainval$RCP_bin, k = 2, list = TRUE)
+      aucs_params <- matrix(NA, nrow = nrow(param_grid), ncol = 2)
+
+      for (i in 1:2) {
+        idx_val <- folds_inner[[i]]
+        val_set <- na.omit(datos_trainval[idx_val, ])
+        train_set <- na.omit(datos_trainval[-idx_val, ])
+
+
+        for (j in 1:nrow(param_grid)) {
+          p_size <- param_grid$size[j]    # Tamaño de capa oculta
+          p_decay <- param_grid$decay[j]  # Decay (regularización)
+
+          # Entrenar RNA con los parámetros actuales
+          modelo <- nnet(formula, data = train_set, size = p_size, decay = p_decay,
+                         maxit = 200, trace = FALSE)
+
+          # Predecir en conjunto de validación
+          probas <- predict(modelo, newdata = val_set, type = "raw")
+
+          # Calcular AUC y almacenar
+          auc_val <- suppressMessages(auc(val_set$RCP_bin, probas))
+          aucs_params[j, i] <- auc_val
+        }
+      }
+
+      # Obtener combinación hiperparametros con mejor AUC medio en inner loop
+      mean_auc <- rowMeans(aucs_params, na.rm = TRUE)
+      best_idx <- which.max(mean_auc)
+
+      # Si mejora el AUC global, se guarda como mejor combinación encontrada
+      if (mean_auc[best_idx] > mejor_auc) {
+        mejor_auc <- mean_auc[best_idx]
+        mejor_subconjunto <- vars
+        mejor_params <- param_grid[best_idx, ]
+      }
+    }
+
+    # ---------- EVALUACIÓN FINAL EN TEST EXTERNO ----------
+    formula_final <- as.formula(paste("RCP_bin ~", paste(mejor_subconjunto, collapse = "+")))
+
+    final_model <- nnet(formula_final, data = datos_trainval,
+                        size = mejor_params$size,
+                        decay = mejor_params$decay,
+                        maxit = 200, trace = FALSE)
+
+    probas_test <- predict(final_model, newdata = datos_test, type = "raw")
+    auc_final <- suppressMessages(auc(datos_test$RCP_bin, probas_test))
+
+    cat("AUC en test externo:", round(auc_final, 3), "\n")
+    aus_outer <- c(aus_outer, auc_final)
+
+    resultados_rna[[length(resultados_rna) + 1]] <- data.frame(
+      size = mejor_params$size,
+      decay = mejor_params$decay,
+      vars = paste(mejor_subconjunto, collapse = ", "),
+      AUC = auc_final
+    )
+  }
+}
+
+# Resultado global promedio del outer loop
+cat("\n AUC promedio final sobre el outer loop:", round(mean(aus_outer), 3), "\n")
+
+
+
+# Organizar resultados para visualización
+
+# Convertir lista a data frame
+df_rna <- as.data.frame(do.call(rbind, resultados_rna))
+df_rna$Iteracion <- 1:nrow(df_rna)
+
+# Mostrar top resultados
+print(df_rna)
+
+# Convertimos resultados a data frame para graficar
+# Este resumen permite visualizar cómo evoluciona el rendimiento del modelo
+# y qué combinaciones de hiperparámetros han funcionado mejor
+
+
+# Este análisis compara si el modelo de RNA mejora estadísticamente al de Regresión Logística
+# Supongamos que tienes:
+# - aus_outer_rna: vector con AUC del modelo RNA (ya calculado en outer loop)
+# - aus_outer_rl:  vector con AUC del modelo de Regresión Logística, en el mismo esquema
+
+
+# Test de t-student para muestras pareadas (diferencias dentro de cada fold)
+test_t <- t.test(aus_outer, aus_outer_rl, paired = TRUE)
+
+# Resultado
+print(test_t)
+
+
+# Evolución del AUC en cada iteración externa
+ggplot(df_rna, aes(x = Iteracion, y = AUC)) +
+  geom_line(color = "steelblue", size = 1) +
+  geom_point(color = "darkblue") +
+  labs(title = "Evolución del AUC en outer loop (RNA)",
+       x = "Iteración", y = "AUC") +
+  theme_minimal()
+
+# Tabla resumen de AUC medio por combinación de parámetros
+tabla_auc <- df_rna %>%
+  group_by(size, decay) %>%
+  summarise(AUC_medio = mean(AUC), .groups = "drop")
+
+# Heatmap para visualizar combinaciones óptimas
+ggplot(tabla_auc, aes(x = as.factor(decay), y = as.factor(size), fill = AUC_medio)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(AUC_medio, 3)), color = "black") +
+  scale_fill_gradient(low = "lightblue", high = "steelblue") +
+  labs(title = "Heatmap AUC promedio por combinación de parámetros (RNA)",
+       x = "Decay", y = "Size") +
+  theme_minimal()
+
+saveRDS(final_model, "modelo_final.rds")
+```
+```{r}
+file.exists("modelo_final.rds")
+# Debería devolver: [1] TRUE
+getwd()
+
+```
+
+
+En primer lugar, la evolución del AUC en el bucle externo muestra una tendencia globalmente estable, con valores oscilando entre 0.66 y 0.73 Salvo una ligera caída puntual en la segunda iteración, el rendimiento se mantiene consistente a lo largo de las diez repeticiones. Este comportamiento sugiere que el modelo es razonablemente robusto ante distintas particiones del conjunto de datos, con una capacidad de generalización aceptable.
+
+Por otro lado, el heatmap de AUC promedio por combinación de parámetros (size y decay) permite identificar la configuración más eficaz del modelo. En concreto, la mejor combinación corresponde a size = 5 y decay = 0.1, con un AUC medio de 0.717, lo que indica que una arquitectura algo más compleja junto con una penalización moderada ofrece el mejor equilibrio entre ajuste y generalización. En cambio, configuraciones más simples (por ejemplo, size = 1) o con regularización insuficiente presentan un rendimiento inferior. Estos resultados justifican empíricamente la necesidad de ajustar cuidadosamente los hiperparámetros en RNA para obtener un rendimiento óptimo.
+
+Se comparó el rendimiento promedio de las redes neuronales artificiales (RNA) frente al modelo clásico de regresión logística (RL) utilizando una validación cruzada anidada tipo 5x2 CV. Para ello, se calcularon los valores de AUC en cada una de las 10 particiones (5 repeticiones x 2 folds) y se aplicó un test t de Student para muestras pareadas. El resultado del test (t = 0.91, p = 0.388) indica que no hay evidencia estadísticamente significativa para afirmar que RNA mejora a RL en términos de AUC (IC95%: [−0.012, 0.027]). Aunque el modelo de RNA obtuvo en promedio un AUC ligeramente superior (~0.0077 puntos), esta diferencia no es concluyente desde el punto de vista estadístico.
+
+Tras varios cambios de parametros y comparación de resultados, el modelo que logró el mejor desempeño en términos de AUC fue el de la iteración 10, con un valor de 0.7289. Este modelo utilizó una red neuronal con 3 neuronas ocultas (size = 3) y un valor de regularización (decay) de 0.05, empleando como variables predictoras: FENOTIPO_IHQ, GRADO_CAT y TAMAÑO. Este resultado sugiere que una arquitectura de complejidad media (ni demasiado simple ni demasiado compleja) puede proporcionar un equilibrio eficaz entre capacidad de ajuste y generalización.
+
+En cuanto al parámetro decay, que actúa como regularizador, se confirma que valores intermedios como 0.01, 0.05 o 0.1 tienden a estabilizar el modelo y a obtener mejores AUCs que valores extremos (como 0 o 0.001), especialmente cuando se combinan con una cantidad moderada de neuronas (size entre 1 y 5). Esto refuerza la noción de que la regularización suave ayuda a controlar el sobreajuste sin penalizar demasiado la capacidad del modelo de capturar patrones útiles.
+
+También se destaca que la inclusión conjunta de las variables TAMAÑO y EDAD_DIAGNOSTICO junto con FENOTIPO_IHQ y GRADO_CAT suele mejorar ligeramente el desempeño, aunque no siempre de forma consistente. Por ejemplo, el modelo de la iteración 8, con size = 3 y decay = 0.1, también obtuvo un AUC bastante alto (0.7181) usando estas variables.
+
+### Máquinas de Soporte Vectorial (SVM)
+
+Las máquinas de soporte vectorial son algoritmos de aprendizaje pertenecientes a la familia de los métodos kernel machines que se usan habitualmente en problemas de clasificación (binaria) y regresión (predicción numérica). Mediante la utilización de funciones kernel proyectan el espacio de entrada en un “espacio de características” de mayor dimensión en el que los datos son linealmente separables.
+
+Se usará la función svm del paquete e1071 para estimar un modelo de máquina de soporte vectorial. Esta función, de forma similar al resto de algoritmos de aprendizaje, toma como parámetros la fórmula, los datos y, particularmente, valores para Cy gamma. El parámetro C indica el peso o importancia que se le da a cada patrón durante el entrenamiento del modelo, de tal forma que cuanto mayor sea el valor de C mejor aprenderá cada patrón del conjunto de datos, aunque será más probable entonces sufrir el efecto de sobreajuste u overfitting.
+
+Por otro lado, el parámetro gamma permite controlar la complejidad de las funciones kernels que se usan para separar los puntos en el espacio N-dimensional. A mayor valor de gamma, mayor complejidad se introduce en la función de separación de espacio de entrada, por lo que también habrá que llegar a una solución de compromiso para evitar el empeoramiento de la capacidad de generalización por el efecto del overfitting.
+
+En esta actividad se estimarán modelos de SVM probando diferentes valores para C y gamma. No obstante, cada problema es diferente requiere la exploración de valores particulares para estos parámtreos. De forma similar al modelado mediante RNA, se construirán tablas de resúmenes y gráficos ilustrativos representando la relación entre el rendimiento y los parámetros C y gamma.
+
+El nuevo enfoque de selección de variables mediante wrapper implementa una estrategia secuencial hacia adelante, que se diferencia del método anterior basado en búsqueda exhaustiva. Mientras que la búsqueda exhaustiva evalúa todas las posibles combinaciones de subconjuntos de variables, garantizando encontrar el mejor conjunto en términos de rendimiento (AUC), lo hace a costa de una alta carga computacional, especialmente cuando el número de variables es elevado. En cambio, la selección secuencial parte de un modelo vacío y va incorporando una a una las variables que, al añadirse, producen la mayor mejora en el AUC, deteniéndose cuando ya no hay mejoras sustanciales. Esta estrategia es mucho más eficiente en términos de tiempo de cómputo, ya que reduce drásticamente el número de modelos que se deben evaluar. Sin embargo, al ser un proceso “codicioso” (greedy), corre el riesgo de quedarse atrapado en soluciones subóptimas si una mala elección inicial impide alcanzar combinaciones más beneficiosas más adelante. En resumen, la búsqueda exhaustiva es más precisa pero más lenta, mientras que la selección secuencial es más ágil, pero puede sacrificar algo de rendimiento a cambio de eficiencia computacional.
+
+```{r}
+# Cargar librerías necesarias
+library(e1071)      # Para SVM
+library(pROC)       # Para cálculo de AUC
+library(caret)      # Para particiones y CV
+library(dplyr)      # Para manipulación de datos
+library(ggplot2)    # Para visualización
+
+# ------------------- EXPLICACIÓN GENERAL ----------------------
+# Este script implementa una validación cruzada anidada (nested CV) para un modelo SVM
+# aplicando un método de selección de variables tipo wrapper mediante selección secuencial hacia adelante (forward selection).
+# Se evalúan distintas combinaciones de hiperparámetros (C y gamma), y se seleccionan aquellos que maximizan el AUC promedio
+# en el inner loop para cada subconjunto de variables. Finalmente, se visualiza la evolución del AUC
+# y se genera una tabla resumen para comparar combinaciones.
+
+# Lista de todas las variables candidatas
+variables_disponibles <- c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO")
+
+# Rango de hiperparámetros para SVM
+c_vals <- c(0.01, 0.1, 1, 10, 100, 1000)
+gamma_vals <- c(0.001, 0.01, 0.1, 0.5, 1)
+param_grid <- expand.grid(C = c_vals, gamma = gamma_vals)
+
+set.seed(42)
+aus_outer_svm <- c()
+resultados_svm <- list()
+
+# ------------------ OUTER LOOP (Validación cruzada externa) -------------------
+for (rep in 1:5) {
+  for (fold in 1:2) {
+    cat("\n Outer loop SVM: repetición", rep, "fold", fold, "\n")
+
+    # Dividir los datos en test externo y train+val
+    idx_test <- createDataPartition(datos$RCP_bin, p = 0.5, list = FALSE)
+    datos_test <- na.omit(datos[idx_test, ])
+    datos_trainval <- na.omit(datos[-idx_test, ])
+
+    # Inicializar variables de selección
+    variables_seleccionadas <- c()
+    variables_restantes <- variables_disponibles
+    mejor_auc <- -Inf
+    mejor_params <- NULL
+    mejora <- TRUE
+
+    # ------------------ WRAPPER CON FORWARD SELECTION ----------------------
+    while (mejora && length(variables_restantes) > 0) {
+      mejora <- FALSE
+      mejor_auc_temp <- mejor_auc
+      mejor_variable <- NULL
+      mejor_param_temp <- NULL
+
+      for (var in variables_restantes) {
+        vars_propuesta <- c(variables_seleccionadas, var)
+        formula <- as.formula(paste("RCP_bin ~", paste(vars_propuesta, collapse = "+")))
+
+        # INNER LOOP: 2-fold CV para tuning de hiperparámetros
+        folds_inner <- createFolds(datos_trainval$RCP_bin, k = 2, list = TRUE)
+        aucs_params <- matrix(NA, nrow = nrow(param_grid), ncol = 2)
+
+        for (i in 1:2) {
+          idx_val <- folds_inner[[i]]
+          val_set <- na.omit(datos_trainval[idx_val, ])
+          train_set <- na.omit(datos_trainval[-idx_val, ])
+
+          for (j in 1:nrow(param_grid)) {
+            c_val <- param_grid$C[j]
+            gamma_val <- param_grid$gamma[j]
+
+            modelo <- svm(formula, data = train_set, kernel = "radial",
+                          cost = c_val, gamma = gamma_val, probability = TRUE)
+
+            probas <- attr(predict(modelo, newdata = val_set, probability = TRUE), "probabilities")[,2]
+            auc_val <- suppressMessages(auc(val_set$RCP_bin, probas))
+            aucs_params[j, i] <- auc_val
+          }
+        }
+
+        mean_auc <- rowMeans(aucs_params, na.rm = TRUE)
+        best_idx <- which.max(mean_auc)
+
+        if (!is.na(mean_auc[best_idx]) && mean_auc[best_idx] > mejor_auc_temp) {
+          mejor_auc_temp <- mean_auc[best_idx]
+          mejor_variable <- var
+          mejor_param_temp <- param_grid[best_idx, ]
+          mejora <- TRUE
+        }
+      }
+
+      if (mejora) {
+        variables_seleccionadas <- c(variables_seleccionadas, mejor_variable)
+        variables_restantes <- setdiff(variables_restantes, mejor_variable)
+        mejor_auc <- mejor_auc_temp
+        mejor_params <- mejor_param_temp
+      }
+    }
+
+    # ---------------- ENTRENAMIENTO FINAL Y EVALUACIÓN ----------------
+    formula_final <- as.formula(paste("RCP_bin ~", paste(variables_seleccionadas, collapse = "+")))
+
+    final_model <- svm(formula_final, data = datos_trainval, kernel = "radial",
+                       cost = mejor_params$C, gamma = mejor_params$gamma, probability = TRUE)
+
+    probas_test <- attr(predict(final_model, newdata = datos_test, probability = TRUE), "probabilities")[,2]
+    auc_final <- suppressMessages(auc(datos_test$RCP_bin, probas_test))
+
+    cat("AUC en test externo (SVM):", round(auc_final, 3), "\n")
+    aus_outer_svm <- c(aus_outer_svm, auc_final)
+
+    resultados_svm[[length(resultados_svm) + 1]] <- data.frame(
+      C = mejor_params$C,
+      gamma = mejor_params$gamma,
+      vars = paste(variables_seleccionadas, collapse = ", "),
+      AUC = auc_final
+    )
+  }
+}
+
+# ---------------------- RESULTADOS Y VISUALIZACION -------------------------
+cat("\n AUC promedio final (SVM):", round(mean(aus_outer_svm), 3), "\n")
+df_svm <- as.data.frame(do.call(rbind, resultados_svm))
+df_svm$Iteracion <- 1:nrow(df_svm)
+
+# Tabla de resultados completa
+print(df_svm)
+
+# Visualizar rendimiento por iteración externa
+ggplot(df_svm, aes(x = Iteracion, y = AUC)) +
+  geom_line(color = "forestgreen", size = 1) +
+  geom_point(color = "darkgreen") +
+  labs(title = "Evolución del AUC en outer loop (SVM Forward Selection)",
+       x = "Iteración", y = "AUC") +
+  theme_minimal()
+
+# Tabla resumen: AUC promedio por parámetros
+tabla_auc_svm <- df_svm %>%
+  group_by(C, gamma) %>%
+  summarise(AUC_medio = mean(AUC), .groups = "drop")
+print(tabla_auc_svm)
+
+
+# Visualizar heatmap para combinaciones de C y gamma
+ggplot(tabla_auc_svm, aes(x = as.factor(gamma), y = as.factor(C), fill = AUC_medio)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(AUC_medio, 3)), color = "black") +
+  scale_fill_gradient(low = "lightgreen", high = "darkgreen") +
+  labs(title = "Heatmap AUC promedio por parámetros (SVM)",
+       x = "Gamma", y = "C") +
+  theme_minimal()
+
+
+```
+Prueba con busqueda exhasutiva para buscar una mejora de resultados:
+```{r}
+# Cargar librerías necesarias
+library(e1071)      # Para SVM
+library(pROC)       # Para cálculo de AUC
+library(caret)      # Para particiones y CV
+library(dplyr)      # Para manipulación de datos
+library(ggplot2)    # Para visualización
+library(combinat)   # Para generar combinaciones de variables (exhaustivo)
+
+# Lista de todas las variables candidatas
+variables_disponibles <- c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO")
+
+# Crear todos los subconjuntos posibles (excepto vacío)
+subconjuntos_vars <- list()
+for (k in 1:length(variables_disponibles)) {
+  subconjuntos_vars <- c(subconjuntos_vars, combn(variables_disponibles, k, simplify = FALSE))
+}
+
+# Rango de hiperparámetros para SVM
+c_vals <- c(0.01, 0.1, 1, 10, 100)
+gamma_vals <- c(0.001, 0.01, 0.1, 0.5, 1)
+param_grid <- expand.grid(C = c_vals, gamma = gamma_vals)
+
+set.seed(42)
+aus_outer_svm <- c()
+resultados_svm <- list()
+
+# ------------------ OUTER LOOP (Validación cruzada externa) -------------------
+for (rep in 1:5) {
+  for (fold in 1:2) {
+    cat("\n Outer loop SVM: repetición", rep, "fold", fold, "\n")
+
+    idx_test <- createDataPartition(datos$RCP_bin, p = 0.5, list = FALSE)
+    datos_test <- na.omit(datos[idx_test, ])
+    datos_trainval <- na.omit(datos[-idx_test, ])
+
+    mejor_auc <- -Inf
+    mejor_subconjunto <- NULL
+    mejor_params <- NULL
+
+    # ------------------ WRAPPER CON BÚSQUEDA EXHAUSTIVA ----------------------
+    for (vars in subconjuntos_vars) {
+      formula <- as.formula(paste("RCP_bin ~", paste(vars, collapse = "+")))
+      folds_inner <- createFolds(datos_trainval$RCP_bin, k = 2, list = TRUE)
+      aucs_params <- matrix(NA, nrow = nrow(param_grid), ncol = 2)
+
+      for (i in 1:2) {
+        idx_val <- folds_inner[[i]]
+        val_set <- na.omit(datos_trainval[idx_val, ])
+        train_set <- na.omit(datos_trainval[-idx_val, ])
+
+        for (j in 1:nrow(param_grid)) {
+          modelo <- svm(formula, data = train_set, kernel = "radial",
+                        cost = param_grid$C[j], gamma = param_grid$gamma[j], probability = TRUE)
+
+          probas <- attr(predict(modelo, newdata = val_set, probability = TRUE), "probabilities")[, 2]
+          auc_val <- suppressMessages(auc(val_set$RCP_bin, probas))
+          aucs_params[j, i] <- auc_val
+        }
+      }
+
+      mean_auc <- rowMeans(aucs_params, na.rm = TRUE)
+      best_idx <- which.max(mean_auc)
+
+      if (!is.na(mean_auc[best_idx]) && mean_auc[best_idx] > mejor_auc) {
+        mejor_auc <- mean_auc[best_idx]
+        mejor_subconjunto <- vars
+        mejor_params <- param_grid[best_idx, ]
+      }
+    }
+
+    # ---------------- ENTRENAMIENTO FINAL Y EVALUACIÓN ----------------
+    formula_final <- as.formula(paste("RCP_bin ~", paste(mejor_subconjunto, collapse = "+")))
+    final_model <- svm(formula_final, data = datos_trainval, kernel = "radial",
+                       cost = mejor_params$C, gamma = mejor_params$gamma, probability = TRUE)
+
+    probas_test <- attr(predict(final_model, newdata = datos_test, probability = TRUE), "probabilities")[, 2]
+    auc_final <- suppressMessages(auc(datos_test$RCP_bin, probas_test))
+
+    cat("AUC en test externo (SVM):", round(auc_final, 3), "\n")
+    aus_outer_svm <- c(aus_outer_svm, auc_final)
+
+    resultados_svm[[length(resultados_svm) + 1]] <- data.frame(
+      C = mejor_params$C,
+      gamma = mejor_params$gamma,
+      vars = paste(mejor_subconjunto, collapse = ", "),
+      AUC = auc_final
+    )
+  }
+}
+
+# ---------------------- RESULTADOS Y VISUALIZACION -------------------------
+cat("\n AUC promedio final (SVM):", round(mean(aus_outer_svm), 3), "\n")
+df_svm <- as.data.frame(do.call(rbind, resultados_svm))
+df_svm$Iteracion <- 1:nrow(df_svm)
+
+# Tabla de resultados completa
+print(df_svm)
+
+# Visualización AUC por iteración
+ggplot(df_svm, aes(x = Iteracion, y = AUC)) +
+  geom_line(color = "darkblue", size = 1) +
+  geom_point(color = "navy") +
+  labs(title = "Evolución del AUC en outer loop (SVM - Exhaustiva)",
+       x = "Iteración", y = "AUC") +
+  theme_minimal()
+
+# Heatmap resumen
+ggplot(tabla_auc_svm, aes(x = as.factor(gamma), y = as.factor(C), fill = AUC_medio)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = round(AUC_medio, 3)), color = "black") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Heatmap AUC promedio por parámetros (SVM Exhaustiva)",
+       x = "Gamma", y = "C") +
+  theme_minimal()
+
+```
+Los resultados obtenidos con el modelo de Máquinas de Vectores de Soporte (SVM) muestran una variabilidad notable en el rendimiento según la combinación de variables y la configuración de los hiperparámetros. En general, se observa que las combinaciones que incluyen múltiples variables tienden a generar AUC más altos, destacando la Iteración 4 con un valor de 0.7078, la más alta del conjunto. Sin embargo, también hay configuraciones con un rendimiento significativamente inferior, como en la Iteración 6, con un AUC de apenas 0.4228, lo que sugiere una posible sobreajuste o una elección inadecuada del conjunto de variables o hiperparámetros en esa ejecución. 
+
+```{r}
+# Test de t-student para muestras pareadas (diferencias dentro de cada fold)
+test_t <- t.test(aus_outer_svm, aus_outer_rl, paired = TRUE)
+# Resultado
+print(test_t)
+```
+
+
+### Árboles de Decisión (rpart)
+
+Los algoritmos de árboles de decisión se utilizan para modelar problemas de clasificación y regresión. Este algoritmo divide los datos en subconjuntos más pequeños basándose en los valores de las características hasta que cada subconjunto es homogéneo o contiene el mismo valor de resultado. Cada nodo en el árbol representa una característica, mientras que cada rama representa un valor de esa característica.
+
+Para la estimación de un modelo de clasificación basado en árboles de decisión se puede utilizar la función rpart del paquete con el mismo nombre. El criterio principal usado para desplegar (o dividir) el árbol de decisión en R con el paquete rpart es la reducción de la impureza en los nodos, que se mide mediante dos criterios principales:
+
+Índice de Gini (gini): Mide la impureza de un nodo, priorizando la división que minimiza la impureza ponderada de los nodos hijos.
+
+Ganancia de Información (Entropía): Mide la cantidad de información ganada por una división, priorizando la división que maximiza la reducción de la entropía ponderada.
+
+El criterio se especifica en el parámetro method de la función rpart. Para problemas de clasificación, los métodos class (por defecto) suelen usar el índice de Gini. Para problemas de regresión, el criterio es habitualmente el error cuadrático medio. La función rpart proporciona adicionalmente un parámetro, cp, con efecto directo en la complejidad o nivel de poda del árbol, de forma que un valor de 1 se corresponde con un árbol sin divisiones y un valor de 0 con un árbol de profundidad máxima. Se suele utilizar para controlar el efecto de sobreentrenamiento de los modelos.
+
+En este caso, la función predict tiene un tercer parámetro type que habrá que configurar con el valor prob para que devuelva la probabilidad de pertenencia a cada clase de un patrón. Se puede usar el paquete rpart.plot para la representación gráfica del árbol de decisión y el conjunto de reglas que permite interpretar el resultado del ajuste del modelo.
+
+```{r}
+# ------------------ ÁRBOLES DE DECISIÓN CON VALIDACIÓN CRUZADA ANIDADA ------------------
+
+library(rpart)
+library(pROC)
+library(caret)
+library(dplyr)
+library(ggplot2)
+library(rpart.plot)
+
+# Variables a considerar
+variables_disponibles <- c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO")
+
+# Valores de complejidad (cp) a evaluar
+cp_vals <- c(0.01, 0.005, 0.001)
+
+set.seed(42)
+aus_outer_rpart <- c()
+resultados_rpart <- list()
+
+# ------------------ OUTER LOOP ------------------
+for (rep in 1:5) {
+  for (fold in 1:2) {
+    cat("\n Outer loop Árbol: repetición", rep, "fold", fold, "\n")
+
+    idx_test <- createDataPartition(datos$RCP_bin, p = 0.5, list = FALSE)
+    datos_test <- na.omit(datos[idx_test, ])
+    datos_trainval <- na.omit(datos[-idx_test, ])
+
+    # MÉTODO DE FILTRADO: Selección por correlación con la clase (chi-cuadrado o AUC univariante)
+    aucs_univariantes <- sapply(variables_disponibles, function(var) {
+      f <- as.formula(paste("RCP_bin ~", var))
+      model_tmp <- rpart(f, data = datos_trainval, method = "class", cp = 0.01)
+      probas <- predict(model_tmp, newdata = datos_trainval, type = "prob")[,2]
+      suppressMessages(auc(datos_trainval$RCP_bin, probas))
+    })
+
+    # Ordenar variables por su AUC individual y quedarse con las top 2 o 3
+    vars_filtradas <- names(sort(aucs_univariantes, decreasing = TRUE))[1:3]
+
+    # INNER LOOP para tuning del cp
+    folds_inner <- createFolds(datos_trainval$RCP_bin, k = 2, list = TRUE)
+    aucs_cp <- matrix(NA, nrow = length(cp_vals), ncol = 2)
+
+    for (i in 1:2) {
+      idx_val <- folds_inner[[i]]
+      val_set <- na.omit(datos_trainval[idx_val, ])
+      train_set <- na.omit(datos_trainval[-idx_val, ])
+
+      for (j in 1:length(cp_vals)) {
+        model <- rpart(as.formula(paste("RCP_bin ~", paste(vars_filtradas, collapse = "+"))),
+                       data = train_set, method = "class", cp = cp_vals[j])
+        probas <- predict(model, newdata = val_set, type = "prob")[,2]
+        auc_val <- suppressMessages(auc(val_set$RCP_bin, probas))
+        aucs_cp[j, i] <- auc_val
+      }
+    }
+
+    mean_aucs <- rowMeans(aucs_cp, na.rm = TRUE)
+    best_cp_idx <- which.max(mean_aucs)
+    best_cp <- cp_vals[best_cp_idx]
+
+    # ENTRENAMIENTO FINAL CON EL MEJOR CONJUNTO DE VARIABLES Y CP
+    formula_final <- as.formula(paste("RCP_bin ~", paste(vars_filtradas, collapse = "+")))
+    final_model <- rpart(formula_final, data = datos_trainval, method = "class", cp = best_cp)
+
+    probas_test <- predict(final_model, newdata = datos_test, type = "prob")[,2]
+    auc_final <- suppressMessages(auc(datos_test$RCP_bin, probas_test))
+
+    cat("AUC en test externo (Árbol):", round(auc_final, 3), "\n")
+    aus_outer_rpart <- c(aus_outer_rpart, auc_final)
+
+    resultados_rpart[[length(resultados_rpart) + 1]] <- data.frame(
+      cp = best_cp,
+      vars = paste(vars_filtradas, collapse = ", "),
+      AUC = auc_final
+    )
+  }
+}
+
+cat("\n AUC promedio final (Árbol):", round(mean(aus_outer_rpart), 3), "\n")
+
+# Tabla resumen
+df_rpart <- as.data.frame(do.call(rbind, resultados_rpart))
+df_rpart$Iteracion <- 1:nrow(df_rpart)
+print(df_rpart)
+
+# Visualización
+ggplot(df_rpart, aes(x = Iteracion, y = AUC)) +
+  geom_line(color = "orange", size = 1) +
+  geom_point(color = "darkorange") +
+  labs(title = "Evolución del AUC en outer loop (Árbol de Decisión)",
+       x = "Iteración", y = "AUC") +
+  theme_minimal()
+
+```
+Hay una diferencia entre ambos modelos. El valor p es 0.026, menor al umbral común de significancia de 0.05, lo que permite rechazar la hipótesis nula de que no hay diferencia entre los modelos. El AUC del modelo SVM fue inferior al del modelo de Regresión Logística. 
+Estos algortimos no me estan dando buenos resultados, desconozco que exista algún error ero me imagino que es por la selección de datos tan escasa.
+
+Probemos con busqueda exhaustiva:
+
+```{r}
+library(rpart)
+library(pROC)
+library(caret)
+library(dplyr)
+library(ggplot2)
+
+subconjuntos_vars <- list(
+  c("FENOTIPO_IHQ"),
+  c("GRADO_CAT"),
+  c("TAMAÑO"),
+  c("EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT"),
+  c("FENOTIPO_IHQ", "TAMAÑO"),
+  c("GRADO_CAT", "TAMAÑO"),
+  c("FENOTIPO_IHQ", "EDAD_DIAGNOSTICO"),
+  c("GRADO_CAT", "EDAD_DIAGNOSTICO"),
+  c("TAMAÑO", "EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT", "EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "TAMAÑO", "EDAD_DIAGNOSTICO"),
+  c("GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO"),
+  c("FENOTIPO_IHQ", "GRADO_CAT", "TAMAÑO", "EDAD_DIAGNOSTICO")
+)
+
+cp_vals <- c(0.1, 0.05, 0.01, 0.005, 0.001)
+param_grid <- data.frame(cp = cp_vals)
+
+set.seed(42)
+aus_outer <- c()
+resultados_tree <- list()
+
+# -------------------- OUTER LOOP (5x2) --------------------
+for (rep in 1:5) {
+  for (fold in 1:2) {
+    cat("\nOuter loop Árbol: repetición", rep, "fold", fold, "\n")
+
+    idx_test <- createDataPartition(datos$RCP_bin, p = 0.5, list = FALSE)
+    datos_test <- na.omit(datos[idx_test, ])
+    datos_trainval <- na.omit(datos[-idx_test, ])
+
+    mejor_auc <- -Inf
+    mejor_subconjunto <- NULL
+    mejor_params <- NULL
+
+    # -------------------- WRAPPER --------------------
+    for (vars in subconjuntos_vars) {
+      formula <- as.formula(paste("RCP_bin ~", paste(vars, collapse = "+")))
+      folds_inner <- createFolds(datos_trainval$RCP_bin, k = 2, list = TRUE)
+      aucs_params <- matrix(NA, nrow = nrow(param_grid), ncol = 2)
+
+      for (i in 1:2) {
+        idx_val <- folds_inner[[i]]
+        val_set <- na.omit(datos_trainval[idx_val, ])
+        train_set <- na.omit(datos_trainval[-idx_val, ])
+
+        for (j in 1:nrow(param_grid)) {
+          modelo <- rpart(formula, data = train_set, method = "class", cp = param_grid$cp[j])
+          probas <- predict(modelo, newdata = val_set, type = "prob")[, 2]
+          auc_val <- suppressMessages(auc(val_set$RCP_bin, probas))
+          aucs_params[j, i] <- auc_val
+        }
+      }
+
+      mean_auc <- rowMeans(aucs_params, na.rm = TRUE)
+      best_idx <- which.max(mean_auc)
+
+      if (!is.na(mean_auc[best_idx]) && mean_auc[best_idx] > mejor_auc) {
+        mejor_auc <- mean_auc[best_idx]
+        mejor_subconjunto <- vars
+        mejor_params <- param_grid[best_idx, , drop = FALSE]  # Asegura que sigue siendo data.frame
+      }
+    }
+
+    # -------------------- MODELO FINAL Y TEST EXTERNO --------------------
+    if (!is.null(mejor_params) && !is.null(mejor_subconjunto)) {
+      formula_final <- as.formula(paste("RCP_bin ~", paste(mejor_subconjunto, collapse = "+")))
+      final_model <- rpart(formula_final, data = datos_trainval, method = "class", cp = mejor_params$cp)
+      probas_test <- predict(final_model, newdata = datos_test, type = "prob")[, 2]
+      auc_final <- suppressMessages(auc(datos_test$RCP_bin, probas_test))
+
+      cat("AUC en test externo:", round(auc_final, 3), "\n")
+      aus_outer <- c(aus_outer, auc_final)
+
+      resultados_tree[[length(resultados_tree) + 1]] <- data.frame(
+        cp = mejor_params$cp,
+        vars = paste(mejor_subconjunto, collapse = ", "),
+        AUC = auc_final
+      )
+    }
+  }
+}
+
+# -------------------- RESULTADOS FINALES --------------------
+
+# Filtrar solo entradas válidas (por seguridad)
+resultados_tree <- resultados_tree[
+  sapply(resultados_tree, function(x) is.data.frame(x) && all(c("cp", "vars", "AUC") %in% colnames(x)))
+]
+
+df_arbol <- as.data.frame(do.call(rbind, resultados_tree))
+df_arbol$Iteracion <- 1:nrow(df_arbol)
+
+cat("\nAUC promedio final sobre el outer loop:", round(mean(aus_outer), 3), "\n")
+print(df_arbol)
+
+# -------------------- VISUALIZACIÓN --------------------
+ggplot(df_arbol, aes(x = Iteracion, y = AUC)) +
+  geom_line(color = "sienna", size = 1) +
+  geom_point(color = "brown") +
+  labs(title = "Evolución del AUC en outer loop (Árbol de Decisión)",
+       x = "Iteración", y = "AUC") +
+  theme_minimal()
+
+# AUC medio por valor de cp
+tabla_auc_arbol <- df_arbol %>%
+  group_by(cp) %>%
+  summarise(AUC_medio = mean(AUC), .groups = "drop")
+
+ggplot(tabla_auc_arbol, aes(x = as.factor(cp), y = AUC_medio, fill = AUC_medio)) +
+  geom_col() +
+  geom_text(aes(label = round(AUC_medio, 3)), vjust = -0.5) +
+  scale_fill_gradient(low = "bisque", high = "darkred") +
+  labs(title = "AUC medio por valor de cp (Árbol de Decisión)",
+       x = "cp", y = "AUC medio") +
+  theme_minimal()
+
+
+```
+Mejora algo el resultado pero no lo suficiente como para tenerlo en cuenta. Solo después de haber elegido y ajustado el modelo final utilizando el conjunto de validación (y posiblemente validación cruzada), se debe evaluar su rendimiento sobre el conjunto de test, que hasta ese momento ha permanecido sin utilizar. Así se garantiza una estimación realista y honesta del comportamiento del modelo ante datos nuevos.
+
+Aunque los resultados obtenidos no han sido tan altos como se esperaba en términos de precisión y rendimiento del modelo, la práctica ha sido fundamental para comprender en profundidad los fundamentos de la regresión logística y su implementación manual.
+
+A lo largo del trabajo se han explorado las distintas etapas del desarrollo de un clasificador, desde la función de activación y el descenso de gradiente hasta la evaluación del modelo mediante herramientas como la matriz de confusión y la curva ROC. Si bien el desempeño del modelo puede mejorarse mediante técnicas adicionales como la normalización de datos, la optimización de hiperparámetros o la validación cruzada, el enfoque principal de esta práctica ha sido formativo.
+
+Además, se ha tenido la oportunidad de conocer y comparar distintos tipos de algoritmos de clasificación, lo que contribuye significativamente al desarrollo de una base sólida para futuros proyectos más avanzados en el ámbito del aprendizaje automático.
+
+
+
